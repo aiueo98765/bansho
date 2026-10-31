@@ -13,7 +13,8 @@ import {$, $$, el, icon, buildTools, markTool, buildOpts, toast, openSheet, math
 
 const canvas = $('#board')
 let room = ''
-let me = {name: '', col: colorFor(selfId)}
+let me = {name: '', col: colorFor(selfId), tablet: false}
+let wake = null
 let net = null
 let board = null
 let scene = null
@@ -61,7 +62,11 @@ function boot(){
     canvas, scene,
     hooks: {
       onState: syncUI,
-      onCam: () => { paintZoom() },
+      onCam: () => { paintZoom(); sendScreenView() },
+      onTabletCam: d => {
+        const t = board.tablet()
+        if (t && net) net.tabletCam(d, t.peer)
+      },
       onHover: sendCursor,
       onLiveStroke: sendLive,
       onLiveEnd: id => net?.live({id, done: 1}),
@@ -74,6 +79,7 @@ function boot(){
   board.st.col = pref.col2 || (THEMES[board.st.theme].dark ? INK.dark[0] : INK.light[0])
   if (pref.markCol) board.st.markCol = pref.markCol
   if (pref.smooth != null) board.st.smooth = pref.smooth
+  if (pref.tabletDim != null) board.st.tabletDim = pref.tabletDim
   applyTheme()
 
   buildTools($('#tools'), t => board.setTool(t))
@@ -81,7 +87,7 @@ function boot(){
   wireKeys()
   wirePaste()
 
-  window.addEventListener('resize', () => { board.resize(); layoutText() })
+  window.addEventListener('resize', () => { board.resize(); layoutText(); refitTablet() })
   new ResizeObserver(() => board.resize()).observe(canvas)
 
   openGate()
@@ -177,6 +183,25 @@ async function start(code){
     onPeers: list => {
       board.peers = list.filter(p => p.page === board.st.pageId || p.page == null)
       paintPeers(list)
+      /* 書いていた画面がいなくなったら、ペンタブを畳む */
+      const t = board.tablet()
+      if (t && !list.some(p => p.id === t.peer)){
+        exitTablet()
+        toast('つないでいた画面がいなくなりました')
+      }
+    },
+    onTabletHello: peerId => sendScreenView(peerId),
+    onScreenView: (d, from) => board.applyScreenView(d, from),
+    onTabletCam: (d, from) => {
+      /* ペンタブからの「ここを映して」。ペンタブ同士では受けない */
+      if (me.tablet || !d || !net) return
+      if (!net.peers.some(p => p.id === from && p.tab)) return
+      const c = board.cam
+      c.x = d.x; c.y = d.y
+      c.k = Math.max(0.08, Math.min(24, d.k || 1))
+      board.mark()
+      paintZoom()
+      sendScreenView()
     },
     onView: (d, from) => {
       if (!d) return
@@ -222,6 +247,121 @@ function sendLive(e){
   net?.live({id: e.id, el: {...e, pts: pts.map(v => Math.round(v * 100) / 100)}})
 }
 
+/* ── ペンタブモード ───────────────────────── */
+
+/* 画面側。いまどこが映っているかをペンタブへ渡す。
+   相手はこれに自分の見え方を合わせるので、モニターを見ながら書ける。 */
+let tvAt = 0
+let tvTimer = 0
+function sendScreenView(target){
+  if (!net || me.tablet) return
+  if (!target && !net.peers.some(p => p.tab)) return
+  const view = () => ({
+    x: board.cam.x, y: board.cam.y, k: board.cam.k,
+    w: board.R.W, h: board.R.H,
+    p: board.st.pageId, bg: board.st.bg,
+  })
+  if (target){ net.screenView(view(), target); return }
+  /* 間引くが、捨てはしない。最後の見え方は必ず遅れて届ける */
+  clearTimeout(tvTimer)
+  const wait = 100 - (performance.now() - tvAt)
+  if (wait > 0){ tvTimer = setTimeout(() => sendScreenView(), wait); return }
+  tvAt = performance.now()
+  net.screenView(view())
+}
+
+/* 画面に乗っている道具箱などを避けて、書ける面を取る。
+   どの辺に寄っているかは、いちばん近い縁で決める */
+function tabletInsets(){
+  const r = {t: 10, r: 10, b: 10, l: 10}
+  const W = window.innerWidth, H = window.innerHeight
+  for (const sel of ['#top', '#tools', '#opts', '#bottom', '#history', '#tabletBar']){
+    const n = $(sel)
+    if (!n || !n.offsetParent) continue
+    const b = n.getBoundingClientRect()
+    if (b.width < 2 || b.height < 2) continue
+    const d = {t: b.bottom, l: b.right, r: W - b.left, b: H - b.top}
+    let side = 't'
+    for (const k of ['l', 'r', 'b']) if (d[k] < d[side]) side = k
+    r[side] = Math.max(r[side], d[side] + 10)
+  }
+  return r
+}
+
+function refitTablet(){
+  if (board.tablet()) board.setTabletPad(tabletInsets())
+}
+
+function startTablet(p){
+  me.tablet = true
+  net?.hello()
+  board.setTablet(p.id, p.name)
+  document.body.classList.add('tabletmode')
+  /* 狭い画面では道具箱を畳む。書ける面を食うので */
+  document.body.classList.toggle('optshide', window.innerWidth < 760)
+  keepAwake()
+  syncUI()
+  requestAnimationFrame(refitTablet)
+  toast(p.name + ' の画面に書きます。画面を見ながらどうぞ', 3200)
+  /* 縦のままだと書ける面が細い帯になる。横にすれば画面いっぱい使える */
+  if (window.innerHeight > window.innerWidth){
+    setTimeout(() => { if (board.tablet()) toast('横向きに持つと、書ける面が広くなります', 3600) }, 3600)
+  }
+}
+
+function exitTablet(){
+  if (!board.tablet()) return
+  me.tablet = false
+  board.exitTablet()
+  document.body.classList.remove('tabletmode', 'optshide')
+  dropAwake()
+  net?.hello()
+  board.home()
+  syncUI()
+}
+
+function toggleTablet(){
+  if (board.tablet()){ exitTablet(); return }
+  const screens = (net?.peers || []).filter(p => !p.tab)
+  if (!screens.length){
+    openSheet({
+      title: 'スマホをペンタブにする',
+      body: [
+        el('p', {class: 'share-lead', text: 'この端末を、板に書くためのペンタブにします。手元の板は見ずに、パソコンの画面を見ながら書けます。'}),
+        el('p', {class: 'note', text: 'まだ相手の画面が見つかりません。先にパソコンで同じ合図の板を開いてください。'}),
+        el('div', {class: 'code-big', text: room}),
+      ],
+    })
+    return
+  }
+  if (screens.length === 1){ startTablet(screens[0]); return }
+  const rows = el('div', {class: 'recents'})
+  for (const p of screens){
+    rows.append(el('button', {
+      class: 'recent', type: 'button',
+      html: `<b>${escapeHtml(p.name)}</b><span>この画面に書く</span>`,
+      onclick: () => { sheet.close(); startTablet(p) },
+    }))
+  }
+  const sheet = openSheet({
+    title: 'どの画面に書きますか',
+    body: [el('p', {class: 'note', text: '選んだ画面に映っているところが、この端末の書ける面になります。'}), rows],
+  })
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]))
+}
+
+/* 書いている間に画面が消えないようにする */
+async function keepAwake(){
+  try { wake = await navigator.wakeLock?.request('screen') } catch { wake = null }
+}
+function dropAwake(){
+  try { wake?.release() } catch {}
+  wake = null
+}
+
 /* ── 画面の見た目 ─────────────────────────── */
 
 function applyTheme(){
@@ -239,14 +379,15 @@ function syncUI(){
   markTool($('#tools'), board.st.tool)
   const s = board.st
   const sig = [s.tool, s.col, s.sz, s.markCol, s.markSz, s.smooth, s.textSize, s.mathSize,
-    s.eraseR, s.erasePart, s.arrow, s.fill, s.dash, s.snap, s.theme,
-    board.selection.length].join('|')
+    s.eraseR, s.erasePart, s.arrow, s.fill, s.dash, s.snap, s.theme, s.tabletDim,
+    !!board.tablet(), board.selection.length].join('|')
   if (sig !== uiSig){
     uiSig = sig
     buildOptsNow()
   }
   $('#undo').disabled = !scene.canUndo
   $('#redo').disabled = !scene.canRedo
+  if (board.tablet()) requestAnimationFrame(refitTablet)
 }
 
 function buildOptsNow(){
@@ -256,6 +397,7 @@ function buildOptsNow(){
       if (patch.col) store.setPref({col2: patch.col})
       if (patch.markCol) store.setPref({markCol: patch.markCol})
       if (patch.smooth != null) store.setPref({smooth: patch.smooth})
+      if (patch.tabletDim != null) store.setPref({tabletDim: patch.tabletDim})
       syncUI()
       board.applyCursor()
       board.mark()
@@ -269,6 +411,7 @@ function buildOptsNow(){
     },
     duplicate: () => board.duplicate(),
     del: () => board.deleteSelection(),
+    tablet: !!board.tablet(),
   })
 }
 
@@ -301,15 +444,21 @@ function paintStatus(s){
 function paintPeers(list){
   const host = $('#peers')
   host.innerHTML = ''
-  host.append(el('span', {class: 'me', style: `--c:${me.col}`, title: me.name + '（あなた）', text: initial(me.name)}))
+  host.append(el('span', {
+    class: 'me' + (me.tablet ? ' pad' : ''), style: `--c:${me.col}`,
+    title: me.name + (me.tablet ? '（あなた・ペンタブ）' : '（あなた）'),
+    text: me.tablet ? '✎' : initial(me.name),
+  }))
   for (const p of list){
     host.append(el('span', {
-      class: 'who', style: `--c:${p.col}`,
-      title: p.name + (p.page && p.page !== board.st.pageId ? '（別のページ）' : ''),
-      text: initial(p.name),
+      class: 'who' + (p.tab ? ' pad' : ''), style: `--c:${p.col}`,
+      title: p.name + (p.tab ? '（ペンタブ）' : '') + (p.page && p.page !== board.st.pageId ? '（別のページ）' : ''),
+      text: p.tab ? '✎' : initial(p.name),
     }))
   }
-  $('#peerCount').textContent = list.length ? String(list.length + 1) : '1'
+  /* ペンタブは人数に数えない。同じ人の二台目なので */
+  const people = list.filter(p => !p.tab).length + (me.tablet ? 0 : 1)
+  $('#peerCount').textContent = String(Math.max(people, 1))
 }
 
 function initial(n){
@@ -342,6 +491,7 @@ function gotoPage(i){
   board.home()
   refreshPages()
   board.mark()
+  sendScreenView()
 }
 
 /* 並び順は数で持つ。前後のあいだを取れば、同時に足されても喧嘩しない */
@@ -372,6 +522,7 @@ function setBG(bg){
   board.st.bg = bg
   refreshPages()
   board.mark()
+  sendScreenView()
 }
 
 /* ── 窓まわり ─────────────────────────────── */
@@ -413,6 +564,12 @@ function wireChrome(){
   }
 
   $('#shareBtn').onclick = openShare
+  $('#tabletBtn').onclick = toggleTablet
+  $('#tabletExit').onclick = exitTablet
+  $('#optsToggle').onclick = () => {
+    document.body.classList.toggle('optshide')
+    requestAnimationFrame(refitTablet)
+  }
 
   $('#saveBtn').onclick = () => {
     const cv = exportPage(scene, board.st.pageId, board.st.theme, board.st.bg, 2)
@@ -456,6 +613,9 @@ function openShare(){
       }}),
     ]),
     el('p', {class: 'note', text: 'サーバーは通りません。板の中身は端末どうしで直接やりとりします。中身が残るのは、それぞれの端末の中だけ。'}),
+    el('div', {class: 'sep-h'}),
+    el('p', {class: 'share-lead', text: '自分のスマホをペンタブにもできます。'}),
+    el('p', {class: 'note', text: 'スマホで同じ合図の板を開き、上の「ペンタブ」ボタンを押すだけ。スマホの面がこの画面にそのまま重なるので、手元は見ずにここを見ながら書けます。'}),
   ]
   openSheet({title: 'いっしょに書く', body})
 }
@@ -488,6 +648,7 @@ function openHelp(){
     body: [
       el('p', {class: 'note', text: '数式は TeX の書き方です（\\frac{1}{2} で分数、x^2 で2乗）。ボタンからも入れられます。グラフは y= の右側を書くだけで引けます。'}),
       el('p', {class: 'note', text: 'マウスで書くときは、ペンを選んで出てくる「手ぶれ補正」を中か強に。ペン先が少し遅れて付いてくるぶん、線のがたつきが取れます。'}),
+      el('p', {class: 'note', text: 'スマホで同じ合図の板を開いて「ペンタブ」ボタンを押すと、スマホがペンタブになります。スマホの面がパソコンの画面に重なるので、手元を見ずにパソコンを見ながら書けます。横向きに持つと広く使えます。'}),
       table,
     ],
   })

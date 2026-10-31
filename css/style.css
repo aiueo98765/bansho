@@ -289,6 +289,41 @@ html[data-dark="1"] .opt.on{color:#14201e}
 .pagenum.wide:hover{background:var(--line-2);color:var(--fg)}
 #bgRow .opt{min-height:26px;padding:0 9px;font-size:11.5px}
 
+/* ── ペンタブモード ─────────────────────── */
+
+#tabletBar{display:none}
+body.tabletmode #tabletBar{
+  position:fixed;z-index:31;
+  left:50%;transform:translateX(-50%);
+  top:66px;
+  display:flex;align-items:center;gap:9px;
+  height:32px;padding:0 6px 0 12px;
+  border-radius:16px;
+  background:var(--accent);
+  color:#fff;
+  font-size:12px;font-weight:700;letter-spacing:.08em;
+  box-shadow:var(--shadow);
+}
+html[data-dark="1"] body.tabletmode #tabletBar{color:#102320}
+#tabletBar .pad-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:currentColor;
+  animation:pulse 1.8s infinite;
+}
+#tabletBar button{
+  height:22px;padding:0 10px;border-radius:11px;
+  background:rgba(255,255,255,.22);
+  font-size:11px;font-weight:700;
+}
+#tabletBar button:hover{background:rgba(255,255,255,.34)}
+body.tabletmode #tabletBtn{background:var(--accent-soft);color:var(--accent-ink)}
+/* ペンタブのときは、板ではなく相手の画面に合わせているので手元の操作は隠す */
+body.tabletmode #bgRow,
+body.tabletmode #bottom .group:first-child{display:none}
+body.optshide #opts{display:none}
+
+.peers>span.pad{border-radius:7px;font-size:13px}
+
 /* ── 文字を書く枠 ───────────────────────── */
 
 #textEdit{

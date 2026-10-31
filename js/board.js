@@ -34,6 +34,7 @@ export function createBoard(opt){
     sz: 3.2,
     markSz: 5,
     smooth: 2,              /* 手ぶれ補正の段。0=切 1=弱 2=中 3=強 */
+    tabletDim: 1,           /* ペンタブのとき板をどれだけ映すか。0=映さない 1=うすく 2=そのまま */
     mode: 'pen',            /* pen | marker */
     fill: false,
     dash: false,
@@ -58,6 +59,14 @@ export function createBoard(opt){
   let band = null                 /* 範囲選択の枠 */
   let peers = []
   let hoverPt = null              /* 今どこを指しているか（消しゴムの輪に使う） */
+
+  /* ペンタブモード。相手の画面に映っている範囲へ自分のカメラを合わせ、
+     描いた線をそのまま相手の板に落とす。手元の板は見ずに相手の画面を見て書く。 */
+  let tablet = null               /* {peer, name, tv} */
+  let tabletPad = {t: 8, r: 8, b: 8, l: 8}
+  let echoAt = 0
+  let echoTimer = 0
+  let fitting = false
 
   /* ── 入口 ───────────────────────────────── */
 
@@ -112,6 +121,9 @@ export function createBoard(opt){
       preview: preview ? [preview] : null,
       ghost: ghostLayer,
       onImgLoad: mark,
+      /* ペンタブのときは板を薄くして、相手の画面に映っている範囲だけ枠で囲う */
+      dim: tablet ? [0, 0.2, 1][st.tabletDim] : 1,
+      frame: tablet ? {...tabletFit(), waiting: !tablet.tv, name: tablet.name} : null,
     })
     dirty = false
     if (laser.length || live.size) mark()
@@ -142,7 +154,110 @@ export function createBoard(opt){
     }
   }
 
-  function resize(){ R.resize(); mark() }
+  function resize(){ R.resize(); if (tablet) fitTablet(); mark() }
+
+  /* ── ペンタブモード ─────────────────────── */
+
+  /* 相手の画面（tv.w × tv.h ピクセル、倍率 tv.k）が、こちらのどこに収まるか。
+     縦横の比が違うので、比を保ったまま置く（実機のペンタブと同じ）。
+     道具箱などが乗っているところは避ける（pad）。書ける面が隠れていては意味がない */
+  function tabletFit(){
+    const tv = tablet && tablet.tv
+    if (!tv || !tv.w || !tv.h) return null
+    const p = tabletPad
+    const aw = Math.max(60, R.W - p.l - p.r)
+    const ah = Math.max(60, R.H - p.t - p.b)
+    const s = Math.min(aw / tv.w, ah / tv.h)
+    const w = tv.w * s, h = tv.h * s
+    return {s, x: p.l + (aw - w) / 2, y: p.t + (ah - h) / 2, w, h}
+  }
+
+  /* 枠の真ん中が画面の真ん中とずれるので、そのぶんカメラを寄せる */
+  const frameOff = f => ({
+    x: f.x + f.w / 2 - R.W / 2,
+    y: f.y + f.h / 2 - R.H / 2,
+  })
+
+  function fitTablet(){
+    const f = tabletFit()
+    if (!f) return
+    const tv = tablet.tv
+    const o = frameOff(f)
+    fitting = true
+    cam.k = tv.k * f.s
+    cam.x = tv.x - o.x / cam.k
+    cam.y = tv.y - o.y / cam.k
+    if (tv.p) st.pageId = tv.p
+    if (tv.bg) st.bg = tv.bg
+    fitting = false
+    mark()
+    hooks.onCam?.()
+  }
+
+  /* こちらで動かした見え方を、相手の画面の言葉に直して返す。
+     間引くが、捨てはしない。最後の状態は必ず遅れて出す（取りこぼすと画面がずれたまま残る） */
+  function echoCam(now){
+    const f = tabletFit()
+    if (!f) return
+    const t = performance.now()
+    clearTimeout(echoTimer)
+    if (!now){
+      const wait = 55 - (t - echoAt)
+      if (wait > 0){ echoTimer = setTimeout(() => echoCam(true), wait); return }
+    }
+    echoAt = t
+    echoTimer = 0
+    const o = frameOff(f)
+    hooks.onTabletCam?.({
+      x: cam.x + o.x / cam.k,
+      y: cam.y + o.y / cam.k,
+      k: cam.k / f.s,
+    })
+  }
+
+  /* カメラが動いたときの後始末をひとまとめに */
+  function camChanged(){
+    mark()
+    hooks.onCam?.()
+    if (tablet && !fitting) echoCam()
+  }
+
+  api.tablet = () => tablet
+  api.tabletFrame = tabletFit
+
+  api.setTabletPad = p => {
+    if (!tablet) return
+    if (p.t === tabletPad.t && p.b === tabletPad.b && p.l === tabletPad.l && p.r === tabletPad.r) return
+    tabletPad = p
+    fitTablet()
+  }
+
+  api.setTablet = (peer, name) => {
+    tablet = {peer, name, tv: null}
+    selection = []
+    st.tool = st.tool === 'select' ? 'pen' : st.tool
+    applyCursor()
+    mark()
+    hooks.onState?.()
+  }
+
+  api.exitTablet = () => {
+    if (!tablet) return
+    tablet = null
+    mark()
+    hooks.onState?.()
+  }
+
+  api.applyScreenView = (tv, from) => {
+    if (!tablet || from !== tablet.peer || !tv) return
+    const first = !tablet.tv
+    tablet.tv = tv
+    /* こちらから動かした直後に届いたものは、ひとつ前の姿。
+       まだ送り切っていない自分の意図のほうが新しいので、合わせるのは待つ */
+    if (!first && (echoTimer || performance.now() - echoAt < 220)){ mark(); return }
+    fitTablet()
+    hooks.onState?.()
+  }
 
   function applyCursor(){
     canvas.style.cursor = st.spaceDown ? 'grab' : (CURSORS[st.tool] || 'crosshair')
@@ -173,15 +288,16 @@ export function createBoard(opt){
     const after = screenToWorld(sx, sy)
     cam.x += before.x - after.x
     cam.y += before.y - after.y
-    mark()
-    hooks.onCam?.()
+    camChanged()
   }
 
   function zoom(factor){ zoomAt(R.W / 2, R.H / 2, factor) }
 
   function home(){
+    /* ペンタブのときは、自分ではなく相手の画面を動かす */
+    if (tablet){ hooks.onTabletCam?.({x: 0, y: 0, k: 1}); return }
     cam.x = 0; cam.y = 0; cam.k = 1
-    mark(); hooks.onCam?.()
+    camChanged()
   }
 
   function fit(){
@@ -189,11 +305,14 @@ export function createBoard(opt){
     const b = bboxAll(list)
     if (!b){ home(); return }
     const pad = 70
-    const k = Math.min((R.W - pad * 2) / Math.max(b.w, 1), (R.H - pad * 2) / Math.max(b.h, 1))
-    cam.k = Math.max(MIN_K, Math.min(2.5, k))
-    cam.x = b.x + b.w / 2
-    cam.y = b.y + b.h / 2
-    mark(); hooks.onCam?.()
+    const vw = tablet && tablet.tv ? tablet.tv.w : R.W
+    const vh = tablet && tablet.tv ? tablet.tv.h : R.H
+    const k = Math.max(MIN_K, Math.min(2.5,
+      Math.min((vw - pad * 2) / Math.max(b.w, 1), (vh - pad * 2) / Math.max(b.h, 1))))
+    const c = {x: b.x + b.w / 2, y: b.y + b.h / 2, k}
+    if (tablet){ hooks.onTabletCam?.(c); return }
+    cam.k = c.k; cam.x = c.x; cam.y = c.y
+    camChanged()
   }
 
   /* ── 要素を置く ─────────────────────────── */
@@ -294,6 +413,15 @@ export function createBoard(opt){
       canvas.style.cursor = 'grabbing'
       return
     }
+    /* ペンタブの枠の外（相手の画面に映っていないところ）は、書く場所ではなく縁。
+       実機のペンタブと同じで、ここをなぞっても線にはならない。動かすのに使う */
+    if (tablet){
+      const f = tabletFit()
+      if (!f || pos.sx < f.x || pos.sx > f.x + f.w || pos.sy < f.y || pos.sy > f.y + f.h){
+        drag = {kind: 'pan', sx: pos.sx, sy: pos.sy, cx: cam.x, cy: cam.y}
+        return
+      }
+    }
     if (e.button !== 0 && e.pointerType === 'mouse') return
 
     switch (st.tool){
@@ -329,7 +457,7 @@ export function createBoard(opt){
       case 'pan': {
         cam.x = drag.cx - (pos.sx - drag.sx) / cam.k
         cam.y = drag.cy - (pos.sy - drag.sy) / cam.k
-        mark(); hooks.onCam?.()
+        camChanged()
         break
       }
       case 'stroke': moveStroke(e, w); break
@@ -399,7 +527,7 @@ export function createBoard(opt){
     /* つまんだ点が指の真ん中に残るように寄せる */
     cam.x = pinch.world.x - (mid.sx - R.W / 2) / cam.k
     cam.y = pinch.world.y - (mid.sy - R.H / 2) / cam.k
-    mark(); hooks.onCam?.()
+    camChanged()
   }
 
   function onWheel(e){
@@ -416,7 +544,7 @@ export function createBoard(opt){
       cam.x += e.deltaX * unit / cam.k
       cam.y += e.deltaY * unit / cam.k
     }
-    mark(); hooks.onCam?.()
+    camChanged()
   }
 
   function onDbl(e){

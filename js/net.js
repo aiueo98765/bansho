@@ -54,6 +54,7 @@ export function createNet(opts){
   const {
     roomCode, route = 'nostr',
     onOp, onLive, onPeers, onSnapshot, onView, onStatus, onLaser,
+    onScreenView, onTabletCam, onTabletHello,
     getSnapshot, getMe,
   } = opts
 
@@ -113,7 +114,7 @@ export function createNet(opts){
     let A
     try {
       A = {}
-      for (const n of ['op', 'lv', 'cu', 'wh', 'sn', 'ak', 'gt', 'vw', 'lz']) A[n] = room.makeAction(n)
+      for (const n of ['op', 'lv', 'cu', 'wh', 'sn', 'ak', 'gt', 'vw', 'lz', 'tv', 'tc']) A[n] = room.makeAction(n)
     } catch (e){
       alive = false
       status({error: String((e && e.message) || e)})
@@ -135,14 +136,23 @@ export function createNet(opts){
 
     A.wh.onMessage = (d, {peerId}) => {
       const prev = peers.get(peerId) || {}
+      const tab = !!(d && d.t)
       peers.set(peerId, {
         ...prev,
         name: String((d && d.n) || '?').slice(0, 14),
         col: (d && d.c) || colorFor(peerId),
+        tab,
       })
       pushPeers()
       status()
+      /* 相手がペンタブなら、こちらの画面の見え方をすぐ渡す */
+      if (tab && !getMe?.().tablet) onTabletHello?.(peerId)
     }
+
+    /* 画面側 → ペンタブ側へ「いまここが映っている」 */
+    A.tv.onMessage = (d, {peerId}) => onScreenView?.(d, peerId)
+    /* ペンタブ側 → 画面側へ「ここを映して」 */
+    A.tc.onMessage = (d, {peerId}) => onTabletCam?.(d, peerId)
 
     A.sn.onMessage = (d, {peerId}) => {
       if (!d) return
@@ -175,7 +185,7 @@ export function createNet(opts){
     room.onPeerJoin = id => {
       peers.set(id, {name: '…', col: colorFor(id), cursor: null, at: Date.now()})
       const me = getMe?.() || {}
-      fire(A.wh, {n: me.name, c: me.col}, id)
+      fire(A.wh, {n: me.name, c: me.col, t: me.tablet ? 1 : 0}, id)
       pushPeers()
       status()
     }
@@ -193,14 +203,14 @@ export function createNet(opts){
     clearTimeout(askTimer)
     askTimer = setTimeout(() => {
       const me = getMe?.() || {}
-      fire(A.wh, {n: me.name, c: me.col})
+      fire(A.wh, {n: me.name, c: me.col, t: me.tablet ? 1 : 0})
       if (room && Object.keys(room.getPeers()).length) fire(A.ak, {})
     }, 1200)
 
     clearInterval(beat)
     beat = setInterval(() => {
       const me = getMe?.() || {}
-      fire(A.wh, {n: me.name, c: me.col})
+      fire(A.wh, {n: me.name, c: me.col, t: me.tablet ? 1 : 0})
       status()
     }, 20000)
 
@@ -231,7 +241,9 @@ export function createNet(opts){
     cursor: d => fire(acts?.cu, d),
     view: d => fire(acts?.vw, d),
     laser: d => fire(acts?.lz, d),
-    hello: () => { const me = getMe?.() || {}; fire(acts?.wh, {n: me.name, c: me.col}) },
+    screenView: (d, target) => fire(acts?.tv, d, target),
+    tabletCam: (d, target) => fire(acts?.tc, d, target),
+    hello: () => { const me = getMe?.() || {}; fire(acts?.wh, {n: me.name, c: me.col, t: me.tablet ? 1 : 0}) },
     pushSnapshot: () => fire(acts?.sn, getSnapshot?.()),
   }
 }

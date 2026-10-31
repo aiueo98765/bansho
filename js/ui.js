@@ -193,6 +193,12 @@ export function buildOpts(host, st, api){
     add(el('div', {class: 'sep-h'}))
     add(toggle('方眼', st.snap, () => api.set({snap: !st.snap}), 'マス目に合わせる'))
   }
+  if (api.tablet){
+    add(el('div', {class: 'sep-h'}))
+    add(seg('手元に板を', [[0, '映さない'], [1, 'うすく'], [2, 'そのまま']], st.tabletDim,
+      v => api.set({tabletDim: v}),
+      '相手の画面を見て書くなら「映さない」。手元も見たいなら「うすく」'))
+  }
   if (tool === 'select'){
     const n = api.selCount()
     add(el('span', {class: 'hint', text: n ? `${n} 個えらんでいる` : '囲むか、触れると選べる'}))

@@ -165,7 +165,7 @@ function drawPath(ctx, el){
     /* 蛍光ペンは太さ一定、乗算で重ねる。重ねたところが濃くなるのが本物らしい */
     ctx.save()
     ctx.globalCompositeOperation = 'multiply'
-    ctx.globalAlpha = 0.38
+    ctx.globalAlpha *= 0.38
     ctx.strokeStyle = el.col
     ctx.lineWidth = el.sz * 3.4
     ctx.lineCap = 'round'
@@ -246,10 +246,11 @@ function shapePath(ctx, el){
 function drawShape(ctx, el, k){
   shapePath(ctx, el)
   if (el.fill){
-    ctx.globalAlpha = 0.16
+    const a = ctx.globalAlpha
+    ctx.globalAlpha = a * 0.16
     ctx.fillStyle = el.col
     ctx.fill()
-    ctx.globalAlpha = 1
+    ctx.globalAlpha = a
   }
   ctx.strokeStyle = el.col
   ctx.lineWidth = el.sz
@@ -548,11 +549,13 @@ export function createRenderer(canvas){
   }
 
   function draw(opts){
-    const {scene, cam, theme, pageId, bg, live, selection, peers, laser, preview, ghost} = opts
+    const {scene, cam, theme, pageId, bg, live, selection, peers, laser, preview, ghost, frame} = opts
+    const dim = opts.dim == null ? 1 : opts.dim
     const th = THEMES[theme] || THEMES.paper
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     drawBG(ctx, th, bg || 'grid', cam, W, H)
 
+    ctx.globalAlpha = dim
     ctx.save()
     ctx.translate(W / 2, H / 2)
     ctx.scale(cam.k, cam.k)
@@ -577,8 +580,10 @@ export function createRenderer(canvas){
     if (ghost) ghost(ctx, cam.k, th)
 
     ctx.restore()
+    ctx.globalAlpha = 1
 
     /* ここから画面座標。拡大しても太さが変わらないもの */
+    if (frame) drawFrame(ctx, frame, W, H, th)
     if (selection && selection.length){
       drawSelection(ctx, selection, cam, W, H, th)
     }
@@ -591,6 +596,63 @@ export function createRenderer(canvas){
     ctx, resize, draw,
     get W(){ return W }, get H(){ return H }, get dpr(){ return dpr },
   }
+}
+
+/* ペンタブの「使える面」を見せる。
+   実機のペンタブと同じで、枠の中だけが相手の画面にあたる。外は縁。 */
+function drawFrame(ctx, f, W, H, th){
+  ctx.save()
+  const label = (s, x, y) => {
+    ctx.font = '600 12px ' + TEXT_FONT
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const w = ctx.measureText(s).width + 20
+    ctx.fillStyle = th.dark ? 'rgba(0,0,0,.55)' : 'rgba(255,255,255,.8)'
+    ctx.beginPath()
+    if (ctx.roundRect) ctx.roundRect(x - w / 2, y - 11, w, 22, 11)
+    else ctx.rect(x - w / 2, y - 11, w, 22)
+    ctx.fill()
+    ctx.fillStyle = th.dark ? 'rgba(255,255,255,.72)' : 'rgba(30,36,46,.62)'
+    ctx.fillText(s, x, y)
+  }
+
+  if (!f.w || !f.h){
+    ctx.fillStyle = th.dark ? 'rgba(0,0,0,.45)' : 'rgba(240,238,232,.75)'
+    ctx.fillRect(0, 0, W, H)
+    label('つなぐ画面をさがしています…', W / 2, H / 2)
+    ctx.restore()
+    return
+  }
+
+  /* 縁を落とす */
+  ctx.fillStyle = th.dark ? 'rgba(0,0,0,.5)' : 'rgba(26,32,44,.14)'
+  ctx.beginPath()
+  ctx.rect(0, 0, W, H)
+  ctx.rect(f.x, f.y, f.w, f.h)
+  ctx.fill('evenodd')
+
+  /* 四隅のかぎ。全部を囲うより、面の広さが目で分かる */
+  const c = Math.min(f.w, f.h) * 0.07 + 10
+  ctx.strokeStyle = th.dark ? 'rgba(255,255,255,.5)' : 'rgba(30,48,80,.42)'
+  ctx.lineWidth = 2
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  for (const [cx, cy, sx, sy] of [
+    [f.x, f.y, 1, 1], [f.x + f.w, f.y, -1, 1],
+    [f.x + f.w, f.y + f.h, -1, -1], [f.x, f.y + f.h, 1, -1],
+  ]){
+    ctx.moveTo(cx + sx * c, cy)
+    ctx.lineTo(cx, cy)
+    ctx.lineTo(cx, cy + sy * c)
+  }
+  ctx.stroke()
+
+  ctx.strokeStyle = th.dark ? 'rgba(255,255,255,.16)' : 'rgba(30,48,80,.16)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(f.x + 0.5, f.y + 0.5, f.w - 1, f.h - 1)
+
+  if (f.name) label(f.name + ' の画面', f.x + f.w / 2, Math.max(f.y - 18, 14))
+  ctx.restore()
 }
 
 export const HANDLE = 7
