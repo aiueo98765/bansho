@@ -1,0 +1,769 @@
+/* ═══════════════════════════════════════════════
+   main.js — 全部つなぐ
+   板（scene） ← 手（board） → 相手（net） → 手元の保存（store）
+   ═══════════════════════════════════════════════ */
+
+import {createScene, uid} from './scene.js'
+import {createBoard} from './board.js'
+import {createNet, newRoomCode, cleanRoomCode, colorFor, selfId} from './net.js'
+import {THEMES, exportPage} from './render.js'
+import {measureText, TEXT_FONT, LINE_H} from './geom.js'
+import * as store from './store.js'
+import {$, $$, el, icon, buildTools, markTool, buildOpts, toast, openSheet, mathSheet, graphSheet, INK} from './ui.js'
+
+const canvas = $('#board')
+let room = ''
+let me = {name: '', col: colorFor(selfId)}
+let net = null
+let board = null
+let scene = null
+let saver = null
+let curPage = 0
+let followAnim = 0
+
+/* ── 外へ出す操作をまとめる ─────────────────
+   線を動かしている間は一フレームごとに操作が出る。そのまま流すと詰まるので、
+   同じ要素は後の形だけ残して、45ミリ秒ごとにまとめて送る。 */
+let outbox = null
+let outTimer = 0
+
+function emit(op){
+  if (!outbox) outbox = {puts: new Map(), dels: new Set(), pages: null, t: 0}
+  for (const e of op.puts || []){ outbox.puts.set(e.id, e); outbox.dels.delete(e.id) }
+  for (const id of op.dels || []){ outbox.dels.add(id); outbox.puts.delete(id) }
+  if (op.pages) outbox.pages = op.pages
+  outbox.t = Math.max(outbox.t, op.t || 0)
+  saver?.nudge()
+  if (!outTimer) outTimer = setTimeout(flushOut, 45)
+}
+
+function flushOut(){
+  outTimer = 0
+  const o = outbox
+  outbox = null
+  if (!o || !net) return
+  const puts = [...o.puts.values()]
+  const dels = [...o.dels]
+  if (!puts.length && !dels.length && !o.pages) return
+  net.op({puts, dels, pages: o.pages, t: o.t, by: selfId})
+}
+
+/* ── 起動 ─────────────────────────────────── */
+
+function boot(){
+  const pref = store.prefs()
+  me.name = pref.name || ''
+  me.col = pref.col || colorFor(selfId)
+
+  scene = createScene({selfId, onChange: () => { board?.mark(); laterUI() }, onEmit: emit})
+
+  board = createBoard({
+    canvas, scene,
+    hooks: {
+      onState: syncUI,
+      onCam: () => { paintZoom() },
+      onHover: sendCursor,
+      onLiveStroke: sendLive,
+      onLiveEnd: id => net?.live({id, done: 1}),
+      onLaser: (x, y) => net?.laser({x, y}),
+      editText, editMath, editGraph, addGraph,
+    },
+  })
+
+  board.st.theme = pref.theme || 'paper'
+  board.st.col = pref.col2 || (THEMES[board.st.theme].dark ? INK.dark[0] : INK.light[0])
+  if (pref.markCol) board.st.markCol = pref.markCol
+  if (pref.smooth != null) board.st.smooth = pref.smooth
+  applyTheme()
+
+  buildTools($('#tools'), t => board.setTool(t))
+  wireChrome()
+  wireKeys()
+  wirePaste()
+
+  window.addEventListener('resize', () => { board.resize(); layoutText() })
+  new ResizeObserver(() => board.resize()).observe(canvas)
+
+  openGate()
+}
+
+/* ── 入口の幕 ─────────────────────────────── */
+
+function openGate(){
+  const gate = $('#gate')
+  const nameIn = $('#gName')
+  const codeIn = $('#gCode')
+  nameIn.value = me.name
+  const hashRoom = cleanRoomCode(location.hash.replace('#', ''))
+  if (hashRoom) codeIn.value = hashRoom
+
+  store.listBoards().then(list => {
+    const host = $('#gRecent')
+    host.innerHTML = ''
+    if (!list.length) return
+    host.append(el('p', {class: 'g-head', text: 'まえに書いた板'}))
+    for (const b of list.slice(0, 5)){
+      host.append(el('button', {
+        class: 'recent', type: 'button',
+        html: `<b>${b.room}</b><span>${b.n} 個 · ${when(b.at)}</span>`,
+        onclick: () => start(b.room),
+      }))
+    }
+  })
+
+  $('#gNew').onclick = () => start(newRoomCode())
+  $('#gJoin').onclick = () => {
+    const c = cleanRoomCode(codeIn.value)
+    if (c.length < 7){ codeIn.focus(); codeIn.classList.add('bad'); setTimeout(() => codeIn.classList.remove('bad'), 600); return }
+    start(c)
+  }
+  codeIn.addEventListener('input', () => {
+    const p = codeIn.selectionStart === codeIn.value.length
+    codeIn.value = cleanRoomCode(codeIn.value)
+    if (p) codeIn.setSelectionRange(codeIn.value.length, codeIn.value.length)
+  })
+  codeIn.addEventListener('keydown', e => { if (e.key === 'Enter') $('#gJoin').click() })
+  nameIn.addEventListener('keydown', e => { if (e.key === 'Enter') (codeIn.value ? $('#gJoin') : $('#gNew')).click() })
+
+  gate.classList.add('on')
+  setTimeout(() => (nameIn.value ? (codeIn.value ? codeIn : nameIn) : nameIn).focus(), 120)
+}
+
+function when(t){
+  const d = (Date.now() - t) / 1000
+  if (d < 90) return 'さっき'
+  if (d < 3600) return Math.round(d / 60) + ' 分前'
+  if (d < 86400) return Math.round(d / 3600) + ' 時間前'
+  return Math.round(d / 86400) + ' 日前'
+}
+
+async function start(code){
+  me.name = ($('#gName').value || '').trim().slice(0, 14) || 'だれか'
+  store.setPref({name: me.name})
+  room = code
+  location.hash = code
+  $('#gate').classList.remove('on')
+  document.body.classList.add('live')
+  $('#roomCode').textContent = code
+
+  /* 手元の控えを先に開く。あとで相手の板と混ざる（新しいほうが残る） */
+  const snap = await store.load(code)
+  if (snap) scene.load(snap)
+  board.st.pageId = scene.pages[0].id
+  board.st.bg = scene.pages[0].bg || 'grid'
+  curPage = 0
+
+  saver = store.autosave(() => room, () => scene.snapshot())
+
+  net = createNet({
+    roomCode: code,
+    getMe: () => me,
+    getSnapshot: () => scene.snapshot(),
+    onOp: op => scene.merge(op),
+    onSnapshot: s => {
+      scene.load(s)
+      const pg = scene.pages[curPage] || scene.pages[0]
+      board.st.pageId = pg.id
+      board.st.bg = pg.bg || 'grid'
+      refreshPages()
+      board.mark()
+      saver.nudge()
+    },
+    onLive: (d, from) => {
+      if (!d) return
+      if (d.done){ board.setLive(d.id, null); return }
+      if (d.el && d.el.p === board.st.pageId) board.setLive(d.id, {...d.el, by: from})
+    },
+    onPeers: list => {
+      board.peers = list.filter(p => p.page === board.st.pageId || p.page == null)
+      paintPeers(list)
+    },
+    onView: (d, from) => {
+      if (!d) return
+      const who = net.peers.find(p => p.id === from)
+      flyTo(d)
+      toast((who?.name || 'だれか') + ' が画面を合わせました')
+    },
+    onLaser: d => { if (d) board.addLaser(d.x, d.y) },
+    onStatus: s => paintStatus(s),
+  })
+  /* つながらなくても板は使える。一人で書けるほうが先 */
+  try { net.join() } catch (e){ console.warn('[板書] つなげませんでした', e) }
+
+  syncUI()
+  refreshPages()
+  paintZoom()
+  board.resize()
+  board.mark()
+  if (!snap) toast('合図は ' + code + '。これを友だちに伝えると同じ板に入れます', 4200)
+}
+
+/* ── 送る ─────────────────────────────────── */
+
+let curT = 0
+function sendCursor(w){
+  const now = performance.now()
+  if (now - curT < 55) return
+  curT = now
+  net?.cursor({x: Math.round(w.x * 10) / 10, y: Math.round(w.y * 10) / 10, p: board.st.pageId})
+}
+
+function sendLive(e){
+  /* 長い線はそのまま送ると重い。途中を間引いて送る（確定版はあとで別に届く） */
+  let pts = e.pts
+  if (pts.length > 600){
+    const step = Math.ceil(pts.length / 3 / 200) * 3
+    const o = []
+    for (let i = 0; i < pts.length; i += step) o.push(pts[i], pts[i + 1], pts[i + 2])
+    const n = pts.length
+    o.push(pts[n - 3], pts[n - 2], pts[n - 1])
+    pts = o
+  }
+  net?.live({id: e.id, el: {...e, pts: pts.map(v => Math.round(v * 100) / 100)}})
+}
+
+/* ── 画面の見た目 ─────────────────────────── */
+
+function applyTheme(){
+  const t = board.st.theme
+  document.documentElement.dataset.theme = t
+  document.documentElement.dataset.dark = THEMES[t].dark ? '1' : '0'
+  board.mark()
+}
+
+let uiSig = ''
+
+/* 道具の設定欄は、関わる値が変わったときだけ組み直す。
+   一筆ごとに作り直すと、押しかけのボタンが消えて取りこぼす */
+function syncUI(){
+  markTool($('#tools'), board.st.tool)
+  const s = board.st
+  const sig = [s.tool, s.col, s.sz, s.markCol, s.markSz, s.smooth, s.textSize, s.mathSize,
+    s.eraseR, s.erasePart, s.arrow, s.fill, s.dash, s.snap, s.theme,
+    board.selection.length].join('|')
+  if (sig !== uiSig){
+    uiSig = sig
+    buildOptsNow()
+  }
+  $('#undo').disabled = !scene.canUndo
+  $('#redo').disabled = !scene.canRedo
+}
+
+function buildOptsNow(){
+  buildOpts($('#opts'), board.st, {
+    set: patch => {
+      Object.assign(board.st, patch)
+      if (patch.col) store.setPref({col2: patch.col})
+      if (patch.markCol) store.setPref({markCol: patch.markCol})
+      if (patch.smooth != null) store.setPref({smooth: patch.smooth})
+      syncUI()
+      board.applyCursor()
+      board.mark()
+    },
+    selCount: () => board.selection.length,
+    recolor: c => {
+      const list = board.selection
+      if (!list.length) return
+      scene.put(list.map(e => ({...e, col: c})))
+      board.mark()
+    },
+    duplicate: () => board.duplicate(),
+    del: () => board.deleteSelection(),
+  })
+}
+
+/* 板が変わるたびに DOM を触ると、書いている最中に引っかかる。一拍おいてまとめる */
+let uiLater = false
+function laterUI(){
+  if (uiLater || !board) return
+  uiLater = true
+  requestAnimationFrame(() => {
+    uiLater = false
+    if (!board) return
+    refreshPages()
+    $('#undo').disabled = !scene.canUndo
+    $('#redo').disabled = !scene.canRedo
+  })
+}
+
+function paintZoom(){
+  $('#zoomVal').textContent = Math.round(board.cam.k * 100) + '%'
+}
+
+function paintStatus(s){
+  const dot = $('#netDot')
+  dot.dataset.state = s.state
+  $('#netLabel').textContent =
+    s.state === 'live' ? `${s.peers} 人といっしょ` :
+    s.state === 'seeking' ? '相手を待っています' : 'つながっていません'
+}
+
+function paintPeers(list){
+  const host = $('#peers')
+  host.innerHTML = ''
+  host.append(el('span', {class: 'me', style: `--c:${me.col}`, title: me.name + '（あなた）', text: initial(me.name)}))
+  for (const p of list){
+    host.append(el('span', {
+      class: 'who', style: `--c:${p.col}`,
+      title: p.name + (p.page && p.page !== board.st.pageId ? '（別のページ）' : ''),
+      text: initial(p.name),
+    }))
+  }
+  $('#peerCount').textContent = list.length ? String(list.length + 1) : '1'
+}
+
+function initial(n){
+  return (n || '?').trim().slice(0, 1).toUpperCase()
+}
+
+/* ── ページ ───────────────────────────────── */
+
+function refreshPages(){
+  const pages = scene.pages
+  if (curPage >= pages.length) curPage = pages.length - 1
+  const pg = pages[curPage]
+  if (pg && board.st.pageId !== pg.id){
+    board.st.pageId = pg.id
+    board.st.bg = pg.bg || 'grid'
+  }
+  $('#pageNow').textContent = (curPage + 1) + ' / ' + pages.length
+  $('#pagePrev').disabled = curPage === 0
+  $('#pageNext').disabled = curPage >= pages.length - 1
+  $('#pageDel').disabled = pages.length < 2
+  for (const b of $$('#bgRow .opt')) b.classList.toggle('on', b.dataset.bg === board.st.bg)
+}
+
+function gotoPage(i){
+  const pages = scene.pages
+  curPage = Math.max(0, Math.min(pages.length - 1, i))
+  board.st.pageId = pages[curPage].id
+  board.st.bg = pages[curPage].bg || 'grid'
+  board.clearSelection()
+  board.home()
+  refreshPages()
+  board.mark()
+}
+
+/* 並び順は数で持つ。前後のあいだを取れば、同時に足されても喧嘩しない */
+function addPage(){
+  const pages = scene.pages
+  const a = pages[curPage]?.o ?? 0
+  const b = pages[curPage + 1]?.o
+  const o = b == null ? a + 1 : (a + b) / 2
+  scene.putPages([{id: uid('p'), bg: board.st.bg, o}])
+  gotoPage(curPage + 1)
+  toast('ページを足しました')
+}
+
+function delPage(){
+  const pages = scene.pages
+  if (pages.length < 2) return
+  const victim = pages[curPage]
+  const ids = scene.onPage(victim.id).map(e => e.id)
+  scene.act({dels: ids, pages: [{...victim, x: 1}]})
+  gotoPage(Math.max(0, curPage - 1))
+  toast('ページを消しました')
+}
+
+function setBG(bg){
+  const pg = scene.pages[curPage]
+  if (!pg) return
+  scene.putPages([{...pg, bg}])
+  board.st.bg = bg
+  refreshPages()
+  board.mark()
+}
+
+/* ── 窓まわり ─────────────────────────────── */
+
+function wireChrome(){
+  $('#undo').onclick = () => { scene.undo(); board.clearSelection(); syncUI() }
+  $('#redo').onclick = () => { scene.redo(); syncUI() }
+
+  $('#zoomIn').onclick = () => board.zoom(1.25)
+  $('#zoomOut').onclick = () => board.zoom(1 / 1.25)
+  $('#zoomVal').onclick = () => board.zoom(1 / board.cam.k)
+  $('#zoomFit').onclick = () => board.fit()
+  $('#zoomHome').onclick = () => board.home()
+
+  $('#pagePrev').onclick = () => gotoPage(curPage - 1)
+  $('#pageNext').onclick = () => gotoPage(curPage + 1)
+  $('#pageAdd').onclick = addPage
+  $('#pageDel').onclick = () => {
+    if (confirm('このページを消します。戻せません。')) delPage()
+  }
+
+  for (const b of $$('#bgRow .opt')) b.onclick = () => setBG(b.dataset.bg)
+
+  $('#themeBtn').onclick = () => {
+    const order = ['paper', 'board', 'slate']
+    const next = order[(order.indexOf(board.st.theme) + 1) % order.length]
+    const wasDefault = board.st.col === (THEMES[board.st.theme].dark ? INK.dark[0] : INK.light[0])
+    board.st.theme = next
+    if (wasDefault) board.st.col = THEMES[next].dark ? INK.dark[0] : INK.light[0]
+    store.setPref({theme: next, col2: board.st.col})
+    applyTheme()
+    syncUI()
+  }
+
+  $('#syncBtn').onclick = () => {
+    if (!net || !net.count){ toast('まだ誰も入っていません'); return }
+    net.view({x: board.cam.x, y: board.cam.y, k: board.cam.k, p: board.st.pageId})
+    toast('みんなの画面をここに合わせました')
+  }
+
+  $('#shareBtn').onclick = openShare
+
+  $('#saveBtn').onclick = () => {
+    const cv = exportPage(scene, board.st.pageId, board.st.theme, board.st.bg, 2)
+    cv.toBlob(b => {
+      const a = el('a', {href: URL.createObjectURL(b), download: `板書-${room}-p${curPage + 1}.png`})
+      document.body.append(a)
+      a.click()
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove() }, 1000)
+    }, 'image/png')
+    toast('画像にしました')
+  }
+
+  $('#clearBtn').onclick = () => {
+    if (!scene.onPage(board.st.pageId).length) return
+    if (confirm('このページの書いたものを全部消します。（戻すボタンで戻せます）')){
+      scene.clearPage(board.st.pageId)
+      board.clearSelection()
+      syncUI()
+    }
+  }
+
+  $('#imgBtn').onclick = () => $('#fileIn').click()
+  $('#fileIn').onchange = e => {
+    for (const f of e.target.files) addImageFile(f)
+    e.target.value = ''
+  }
+
+  $('#helpBtn').onclick = openHelp
+}
+
+function openShare(){
+  const url = location.origin + location.pathname + '#' + room
+  const body = [
+    el('p', {class: 'share-lead', text: 'この合図を友だちに伝えると、同じ板に入れます。'}),
+    el('div', {class: 'code-big', text: room}),
+    el('div', {class: 'share-row'}, [
+      el('input', {class: 'g-in', value: url, readonly: 'readonly', onclick: e => e.target.select()}),
+      el('button', {class: 'btn tiny', type: 'button', text: 'リンクを写す', onclick: async e => {
+        try { await navigator.clipboard.writeText(url); e.target.textContent = '写しました' }
+        catch { toast('うまく写せませんでした。手で選んでください') }
+      }}),
+    ]),
+    el('p', {class: 'note', text: 'サーバーは通りません。板の中身は端末どうしで直接やりとりします。中身が残るのは、それぞれの端末の中だけ。'}),
+  ]
+  openSheet({title: 'いっしょに書く', body})
+}
+
+function openHelp(){
+  const rows = [
+    ['ペン / 蛍光ペン / 消しゴム', 'P / M / E'],
+    ['手ぶれ補正を強める / ゆるめる', 'Shift+S / S'],
+    ['選ぶ', 'V'],
+    ['直線・矢印 / 四角 / 円 / 三角', 'L / R / O / Y'],
+    ['文字 / 数式 / グラフ', 'T / F / G'],
+    ['指し棒', 'K'],
+    ['戻す / やり直す', 'Ctrl+Z / Ctrl+Shift+Z'],
+    ['画面を動かす', 'スペースを押しながら引く・指二本・ホイール'],
+    ['拡大・縮小', 'Ctrl+ホイール・つまむ・Ctrl +/−'],
+    ['全体を見る / 真ん中へ', 'Ctrl+1 / Ctrl+0'],
+    ['選んだものを消す', 'Delete'],
+    ['全部選ぶ / 複製', 'Ctrl+A / Ctrl+D'],
+    ['画像で保存', 'Ctrl+S'],
+    ['直線を15度ずつに / 正方形・正円', 'Shift を押しながら'],
+    ['画像を貼る', 'Ctrl+V（スクショをそのまま貼れます）'],
+  ]
+  const table = el('div', {class: 'keys'})
+  for (const [a, b] of rows){
+    table.append(el('div', {class: 'krow'}, [el('span', {text: a}), el('kbd', {text: b})]))
+  }
+  openSheet({
+    title: '使い方',
+    wide: true,
+    body: [
+      el('p', {class: 'note', text: '数式は TeX の書き方です（\\frac{1}{2} で分数、x^2 で2乗）。ボタンからも入れられます。グラフは y= の右側を書くだけで引けます。'}),
+      el('p', {class: 'note', text: 'マウスで書くときは、ペンを選んで出てくる「手ぶれ補正」を中か強に。ペン先が少し遅れて付いてくるぶん、線のがたつきが取れます。'}),
+      table,
+    ],
+  })
+}
+
+/* ── 文字を置く ───────────────────────────── */
+
+let editing = null
+const ta = () => $('#textEdit')
+
+function editText(target, at){
+  const t = ta()
+  const st = board.st
+  const e = target || null
+  const size = e ? e.sz : st.textSize
+  const col = e ? e.col : st.col
+  editing = {el: e, at: at || {x: e.x, y: e.y}, size, col}
+  t.value = e ? e.s : ''
+  t.style.color = col
+  t.style.display = 'block'
+  layoutText()
+  /* focus はひと呼吸おいて当てる。pointerdown と同じ拍で当てると弾かれる */
+  setTimeout(() => {
+    if (!editing) return
+    t.focus()
+    t.setSelectionRange(t.value.length, t.value.length)
+  }, 0)
+}
+
+function layoutText(){
+  if (!editing) return
+  const t = ta()
+  const p = board.worldToScreen(editing.at.x, editing.at.y)
+  const k = board.cam.k
+  t.style.left = p.x + 'px'
+  t.style.top = p.y + 'px'
+  t.style.fontSize = (editing.size * k) + 'px'
+  t.style.lineHeight = LINE_H
+  t.style.fontFamily = TEXT_FONT
+  const m = measureText(t.value || ' ', editing.size)
+  t.style.width = Math.max(m.w * k + 24 * k, 140) + 'px'
+  t.style.height = Math.max(m.h * k, editing.size * k * LINE_H) + 'px'
+}
+
+function commitText(){
+  if (!editing) return
+  const t = ta()
+  const s = t.value.replace(/\s+$/, '')
+  const cur = editing
+  editing = null
+  t.style.display = 'none'
+  t.value = ''
+  if (cur.el){
+    if (s) scene.put({...cur.el, s})
+    else scene.remove([cur.el.id])
+  } else if (s){
+    board.place({type: 'text', x: cur.at.x, y: cur.at.y, s, col: cur.col, sz: cur.size}, {select: false})
+  }
+  syncUI()
+  board.mark()
+}
+
+function wireText(){
+  const t = ta()
+  t.addEventListener('input', layoutText)
+  t.addEventListener('blur', commitText)
+  t.addEventListener('keydown', e => {
+    if (e.key === 'Escape'){ e.stopPropagation(); const c = editing; editing = null; t.style.display = 'none'; if (c?.el) board.mark(); return }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); t.blur() }
+    e.stopPropagation()
+  })
+}
+
+/* ── 数式とグラフ ─────────────────────────── */
+
+function editMath(target, at){
+  mathSheet({
+    value: target ? target.s : '',
+    theme: board.st.theme,
+    color: target ? target.col : board.st.col,
+    onDone: s => {
+      if (target) scene.put({...target, s})
+      else board.place({type: 'math', x: at.x, y: at.y, s, col: board.st.col, sz: board.st.mathSize})
+      board.mark()
+      syncUI()
+    },
+  })
+}
+
+function addGraph(at){
+  graphSheet({
+    theme: board.st.theme,
+    onDone: g => {
+      const w = 520, h = 380
+      board.place({...g, x: at.x, y: at.y, w, h})
+      board.mark()
+    },
+  })
+}
+
+function editGraph(target){
+  graphSheet({
+    value: target,
+    theme: board.st.theme,
+    onDone: g => {
+      scene.put({...target, ...g, x: target.x, y: target.y, w: target.w, h: target.h})
+      board.mark()
+    },
+  })
+}
+
+/* ── 画像 ─────────────────────────────────── */
+
+function wirePaste(){
+  window.addEventListener('paste', e => {
+    if (editing) return
+    const items = [...(e.clipboardData?.items || [])]
+    const img = items.find(i => i.type.startsWith('image/'))
+    if (img){
+      e.preventDefault()
+      addImageFile(img.getAsFile())
+      return
+    }
+    const txt = e.clipboardData?.getData('text')
+    if (txt && txt.trim()){
+      e.preventDefault()
+      const c = board.screenToWorld(board.R.W / 2, board.R.H / 2)
+      board.place({type: 'text', x: c.x - 150, y: c.y - 20, s: txt.trim().slice(0, 2000), col: board.st.col, sz: board.st.textSize}, {select: true})
+    }
+  })
+  canvas.addEventListener('dragover', e => { e.preventDefault() })
+  canvas.addEventListener('drop', e => {
+    e.preventDefault()
+    for (const f of e.dataTransfer?.files || []) if (f.type.startsWith('image/')) addImageFile(f, e)
+  })
+}
+
+async function addImageFile(file, ev){
+  if (!file) return
+  if (file.size > 14 * 1024 * 1024){ toast('画像が大きすぎます（14MBまで）'); return }
+  try {
+    const url = await shrink(file, 1600)
+    const im = await loaded(url)
+    const maxW = 560
+    const k = Math.min(1, maxW / im.naturalWidth)
+    const w = im.naturalWidth * k, h = im.naturalHeight * k
+    let at
+    if (ev) at = board.screenToWorld(ev.clientX - canvas.getBoundingClientRect().left, ev.clientY - canvas.getBoundingClientRect().top)
+    else at = board.screenToWorld(board.R.W / 2, board.R.H / 2)
+    board.place({type: 'img', x: at.x - w / 2, y: at.y - h / 2, w, h, src: url})
+    board.mark()
+    toast('貼りました')
+  } catch (e){
+    toast('画像を読めませんでした')
+  }
+}
+
+function loaded(src){
+  return new Promise((res, rej) => {
+    const im = new Image()
+    im.onload = () => res(im)
+    im.onerror = rej
+    im.src = src
+  })
+}
+
+/* 相手に送るので、長辺を縮めて JPEG にする（透明が要るものは PNG のまま） */
+async function shrink(file, max){
+  const url = await new Promise((res, rej) => {
+    const r = new FileReader()
+    r.onload = () => res(r.result)
+    r.onerror = rej
+    r.readAsDataURL(file)
+  })
+  const im = await loaded(url)
+  const long = Math.max(im.naturalWidth, im.naturalHeight)
+  const png = /png|gif|webp/i.test(file.type)
+  if (long <= max && file.size < 900 * 1024) return url
+  const k = Math.min(1, max / long)
+  const cv = document.createElement('canvas')
+  cv.width = Math.round(im.naturalWidth * k)
+  cv.height = Math.round(im.naturalHeight * k)
+  const c = cv.getContext('2d')
+  c.imageSmoothingQuality = 'high'
+  if (!png){ c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height) }
+  c.drawImage(im, 0, 0, cv.width, cv.height)
+  return cv.toDataURL(png ? 'image/png' : 'image/jpeg', 0.86)
+}
+
+/* ── 画面を合わせる ───────────────────────── */
+
+function flyTo(d){
+  if (d.p && d.p !== board.st.pageId){
+    const i = scene.pages.findIndex(p => p.id === d.p)
+    if (i >= 0){ curPage = i; board.st.pageId = d.p; board.st.bg = scene.pages[i].bg || 'grid'; refreshPages() }
+  }
+  cancelAnimationFrame(followAnim)
+  const c = board.cam
+  const from = {x: c.x, y: c.y, k: c.k}
+  const t0 = performance.now()
+  const dur = 420
+  const step = () => {
+    const p = Math.min(1, (performance.now() - t0) / dur)
+    const e = 1 - Math.pow(1 - p, 3)
+    c.x = from.x + (d.x - from.x) * e
+    c.y = from.y + (d.y - from.y) * e
+    c.k = from.k * Math.pow(d.k / from.k, e)
+    board.mark()
+    paintZoom()
+    if (p < 1) followAnim = requestAnimationFrame(step)
+  }
+  followAnim = requestAnimationFrame(step)
+}
+
+/* ── 鍵盤 ─────────────────────────────────── */
+
+const TOOLKEY = {v: 'select', p: 'pen', m: 'marker', e: 'eraser', l: 'line', r: 'rect', o: 'ell', y: 'tri', t: 'text', f: 'math', g: 'graph', k: 'laser'}
+
+function wireKeys(){
+  wireText()
+  window.addEventListener('keydown', e => {
+    const tag = (e.target.tagName || '').toLowerCase()
+    if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return
+    const mod = e.ctrlKey || e.metaKey
+
+    if (e.code === 'Space' && !mod){ board.setSpace(true); e.preventDefault(); return }
+
+    if (mod){
+      const k = e.key.toLowerCase()
+      if (k === 'z'){ e.preventDefault(); e.shiftKey ? scene.redo() : scene.undo(); board.clearSelection(); syncUI(); return }
+      if (k === 'y'){ e.preventDefault(); scene.redo(); syncUI(); return }
+      if (k === 'a'){ e.preventDefault(); board.setTool('select'); board.select(scene.onPage(board.st.pageId).map(x => x.id)); return }
+      if (k === 'd'){ e.preventDefault(); board.duplicate(); return }
+      if (k === 's'){ e.preventDefault(); $('#saveBtn').click(); return }
+      if (k === '0'){ e.preventDefault(); board.home(); return }
+      if (k === '1'){ e.preventDefault(); board.fit(); return }
+      if (e.key === '+' || e.key === '='){ e.preventDefault(); board.zoom(1.25); return }
+      if (e.key === '-'){ e.preventDefault(); board.zoom(1 / 1.25); return }
+      return
+    }
+
+    if (e.key === 'Delete' || e.key === 'Backspace'){
+      if (board.selection.length){ e.preventDefault(); board.deleteSelection(); syncUI() }
+      return
+    }
+    if (e.key === 'Escape'){ board.clearSelection(); return }
+    if (e.key.startsWith('Arrow')){
+      const d = e.shiftKey ? 16 : 1
+      const dx = e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0
+      const dy = e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0
+      if (board.selection.length){ e.preventDefault(); board.nudge(dx, dy) }
+      else { board.cam.x += dx * 12 / board.cam.k; board.cam.y += dy * 12 / board.cam.k; board.mark() }
+      return
+    }
+    if (e.key === '[' ){ gotoPage(curPage - 1); return }
+    if (e.key === ']' ){ gotoPage(curPage + 1); return }
+    if (e.key === 's' || e.key === 'S'){
+      const v = Math.max(0, Math.min(3, board.st.smooth + (e.shiftKey ? 1 : -1)))
+      board.st.smooth = v
+      store.setPref({smooth: v})
+      syncUI()
+      toast('手ぶれ補正：' + ['切', '弱', '中', '強'][v])
+      return
+    }
+    const t = TOOLKEY[e.key.toLowerCase()]
+    if (t && !e.altKey){ board.setTool(t); return }
+  })
+
+  window.addEventListener('keyup', e => {
+    if (e.code === 'Space') board.setSpace(false)
+  })
+  window.addEventListener('blur', () => board.setSpace(false))
+  /* 閉じ際の保存は間に合わないことがある。見えなくなった時点でも書いておく */
+  window.addEventListener('beforeunload', () => { flushOut(); saver?.flush() })
+  window.addEventListener('pagehide', () => { flushOut(); saver?.flush() })
+  document.addEventListener('visibilitychange', () => { if (document.hidden){ flushOut(); saver?.flush() } })
+}
+
+boot()

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ja" data-theme="paper" data-dark="0">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#fbfaf7">
+<meta name="description" content="友だちと同じ板を見ながら、数学の図も式もその場で書く。合図を伝えるだけで入れる、サーバーを通らないホワイトボード。">
+<title>板書｜友だちと同じ板で数学を解くホワイトボード</title>
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="板書｜友だちと同じ板で数学を解くホワイトボード">
+<meta property="og:description" content="合図を6文字伝えるだけ。線も数式もグラフも、書いたそばから相手の画面に出ます。サーバーは通りません。">
+<meta property="og:url" content="https://aiueo98765.github.io/bansho/">
+<meta property="og:image" content="https://aiueo98765.github.io/bansho/card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="板書｜友だちと同じ板で数学を解くホワイトボード">
+<meta name="twitter:description" content="合図を6文字伝えるだけ。線も数式もグラフも、書いたそばから相手の画面に出ます。サーバーは通りません。">
+<meta name="twitter:image" content="https://aiueo98765.github.io/bansho/card.png">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316322c'/><path d='M7 20.5c3-1 4.5-9 7.5-9s2.5 6 5.5 6 4-2.5 5-4' stroke='%23f3f1e7' stroke-width='2.2' fill='none' stroke-linecap='round'/></svg>">
+</head>
+<body>
+
+<canvas id="board"></canvas>
+<textarea id="textEdit" spellcheck="false" aria-label="文字を書く"></textarea>
+
+<!-- ───────────── 上の帯 ───────────── -->
+<header id="top">
+  <div class="brand" aria-label="板書">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+      <rect x="1" y="1" width="30" height="30" rx="7" class="bm-bg"/>
+      <path d="M7 20.5c3-1 4.5-9 7.5-9s2.5 6 5.5 6 4-2.5 5-4" class="bm-ink"/>
+    </svg>
+    <b>板書</b>
+  </div>
+
+  <button id="shareBtn" class="chip" type="button" title="合図を友だちに伝える">
+    <span class="chip-k">合図</span>
+    <span id="roomCode" class="chip-v">———</span>
+  </button>
+
+  <div class="net" title="つながり">
+    <i id="netDot" data-state="off"></i>
+    <span id="netLabel">つながっていません</span>
+  </div>
+
+  <div id="peers" class="peers" aria-label="いまいる人"></div>
+  <span id="peerCount" class="pcount">1</span>
+
+  <div class="grow"></div>
+
+  <button id="syncBtn" class="tbtn wide" type="button" title="みんなの画面を、いま自分が見ているところに合わせる">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12a7.5 7.5 0 0 1 12.8-5.3L20 9M19.5 12a7.5 7.5 0 0 1-12.8 5.3L4 15"/><path d="M20 4.5V9h-4.5M4 19.5V15h4.5"/></svg>
+    <span>画面を合わせる</span>
+  </button>
+
+  <button id="imgBtn" class="tbtn" type="button" title="画像を貼る（Ctrl+V でも貼れます）">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="8.8" cy="10" r="1.6"/><path d="M4.5 17l4.6-4.3 3.4 3 2.6-2.3 4.4 3.9"/></svg>
+  </button>
+  <input id="fileIn" type="file" accept="image/*" multiple hidden>
+
+  <button id="saveBtn" class="tbtn" type="button" title="このページを画像で保存（Ctrl+S）">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0l-4.2-4.2M12 15l4.2-4.2M4.5 19.5h15"/></svg>
+  </button>
+
+  <button id="themeBtn" class="tbtn" type="button" title="紙・黒板・石板を切り替える">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 3.8v16.4" /><path d="M12 3.8a8.2 8.2 0 0 1 0 16.4z" fill="currentColor" stroke="none" opacity=".9"/></svg>
+  </button>
+
+  <button id="clearBtn" class="tbtn" type="button" title="このページを全部消す">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 7h15M9 7V5h6v2M6.5 7l1 12.5h9L17.5 7"/></svg>
+  </button>
+
+  <button id="helpBtn" class="tbtn" type="button" title="使い方">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.4"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.6v.4"/><circle cx="12" cy="16.9" r=".9" fill="currentColor" stroke="none"/></svg>
+  </button>
+</header>
+
+<!-- ───────────── 道具 ───────────── -->
+<nav id="tools" aria-label="道具"></nav>
+
+<div id="history">
+  <button id="undo" class="tbtn" type="button" title="戻す（Ctrl+Z）">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7h6.5a4.5 4.5 0 0 1 0 9H7"/><path d="M10.6 3.8L7 7.2l3.6 3.4"/></svg>
+  </button>
+  <button id="redo" class="tbtn" type="button" title="やり直す（Ctrl+Shift+Z）">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7H9.5a4.5 4.5 0 0 0 0 9H17"/><path d="M13.4 3.8L17 7.2l-3.6 3.4"/></svg>
+  </button>
+</div>
+
+<!-- ───────────── 道具の設定 ───────────── -->
+<section id="opts" aria-label="道具の設定"></section>
+
+<!-- ───────────── 下の帯 ───────────── -->
+<footer id="bottom">
+  <div class="group">
+    <button id="pagePrev" class="tbtn" type="button" title="前のページ（[）">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5L8 12l6.5 6.5"/></svg>
+    </button>
+    <span id="pageNow" class="pagenum">1 / 1</span>
+    <button id="pageNext" class="tbtn" type="button" title="次のページ（]）">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5L16 12l-6.5 6.5"/></svg>
+    </button>
+    <button id="pageAdd" class="tbtn" type="button" title="ページを足す">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5.5v13M5.5 12h13"/></svg>
+    </button>
+    <button id="pageDel" class="tbtn" type="button" title="このページを消す">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 7h13M9 7V5h6v2M7 7l.9 12h8.2L17 7"/></svg>
+    </button>
+  </div>
+
+  <div class="group" id="bgRow" aria-label="下地">
+    <button class="opt" data-bg="plain" type="button">無地</button>
+    <button class="opt" data-bg="grid" type="button">方眼</button>
+    <button class="opt" data-bg="dot" type="button">点</button>
+    <button class="opt" data-bg="line" type="button">罫線</button>
+    <button class="opt" data-bg="graph" type="button">座標</button>
+  </div>
+
+  <div class="group">
+    <button id="zoomOut" class="tbtn" type="button" title="縮小">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5.5 12h13"/></svg>
+    </button>
+    <button id="zoomVal" class="pagenum wide" type="button" title="100% に戻す">100%</button>
+    <button id="zoomIn" class="tbtn" type="button" title="拡大">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg>
+    </button>
+    <button id="zoomFit" class="tbtn" type="button" title="全体を見る（Ctrl+1）">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+    <button id="zoomHome" class="tbtn" type="button" title="真ん中へ（Ctrl+0）">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7M6.5 9.5V20h11V9.5"/></svg>
+    </button>
+  </div>
+</footer>
+
+<!-- ───────────── 入口 ───────────── -->
+<div id="gate">
+  <div class="gate-card">
+    <div class="gate-mark" aria-hidden="true">
+      <svg viewBox="0 0 120 84" width="120" height="84">
+        <rect x="2" y="2" width="116" height="74" rx="6" fill="#16322c"/>
+        <rect x="8" y="8" width="104" height="62" rx="3" fill="none" stroke="rgba(255,255,255,.1)"/>
+        <path d="M20 54c7-2 10-26 18-26s7 17 14 17 10-7 13-12" fill="none" stroke="#f3f1e7" stroke-width="2.6" stroke-linecap="round"/>
+        <path d="M74 32h14M81 25v14" stroke="#9ef09a" stroke-width="2.2" stroke-linecap="round"/>
+        <circle cx="97" cy="48" r="5" fill="none" stroke="#8fd4ff" stroke-width="2.2"/>
+        <rect x="26" y="76" width="68" height="4" rx="2" fill="rgba(0,0,0,.18)"/>
+      </svg>
+    </div>
+
+    <h1>板書</h1>
+    <p class="gate-lead">友だちと<strong>同じ板</strong>を見ながら、式も図もその場で書く。<br>
+      サーバーは通らない。中身が残るのは、それぞれの端末の中だけ。</p>
+
+    <label class="field">
+      <span>なまえ</span>
+      <input id="gName" type="text" maxlength="14" placeholder="板に出る名前" autocomplete="nickname">
+    </label>
+
+    <button id="gNew" class="btn go big" type="button">新しい板をつくる</button>
+
+    <div class="or"><span>または</span></div>
+
+    <div class="join">
+      <input id="gCode" type="text" inputmode="latin" autocapitalize="characters" autocomplete="off"
+             spellcheck="false" placeholder="ABC-123" maxlength="7" aria-label="合図">
+      <button id="gJoin" class="btn" type="button">この板に入る</button>
+    </div>
+
+    <div id="gRecent" class="recents"></div>
+
+    <p class="gate-foot">数式は TeX の書き方で入れられます。関数のグラフもその場で引けます。</p>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
