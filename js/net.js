@@ -54,7 +54,7 @@ export function createNet(opts){
   const {
     roomCode, route = 'nostr',
     onOp, onLive, onPeers, onSnapshot, onView, onStatus, onLaser,
-    onScreenView, onTabletCam, onTabletHello,
+    onScreenView, onTabletCam, onTabletHello, onScanAsk,
     getSnapshot, getMe,
   } = opts
 
@@ -114,7 +114,7 @@ export function createNet(opts){
     let A
     try {
       A = {}
-      for (const n of ['op', 'lv', 'cu', 'wh', 'sn', 'ak', 'gt', 'vw', 'lz', 'tv', 'tc']) A[n] = room.makeAction(n)
+      for (const n of ['op', 'lv', 'cu', 'wh', 'sn', 'ak', 'gt', 'vw', 'lz', 'tv', 'tc', 'cs']) A[n] = room.makeAction(n)
     } catch (e){
       alive = false
       status({error: String((e && e.message) || e)})
@@ -179,6 +179,9 @@ export function createNet(opts){
       if (h){ clearTimeout(h); pendingGive.delete(peerId) }
     }
 
+    /* 画面側 → ペンタブ側へ「問題を写して」。撮った一枚は普通の操作として board に流れる */
+    A.cs.onMessage = (d, {peerId}) => onScanAsk?.(d, peerId)
+
     A.vw.onMessage = (d, {peerId}) => onView?.(d, peerId)
     A.lz.onMessage = (d, {peerId}) => onLaser?.(d, peerId)
 
@@ -241,6 +244,7 @@ export function createNet(opts){
     cursor: d => fire(acts?.cu, d),
     view: d => fire(acts?.vw, d),
     laser: d => fire(acts?.lz, d),
+    askScan: target => fire(acts?.cs, {}, target),
     screenView: (d, target) => fire(acts?.tv, d, target),
     tabletCam: (d, target) => fire(acts?.tc, d, target),
     hello: () => { const me = getMe?.() || {}; fire(acts?.wh, {n: me.name, c: me.col, t: me.tablet ? 1 : 0}) },

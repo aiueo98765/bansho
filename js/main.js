@@ -10,6 +10,7 @@ import {THEMES, exportPage} from './render.js'
 import {measureText, TEXT_FONT, LINE_H} from './geom.js'
 import * as store from './store.js'
 import {$, $$, el, icon, buildTools, markTool, buildOpts, toast, openSheet, mathSheet, graphSheet, INK} from './ui.js'
+import {openScan} from './cam.js'
 
 const canvas = $('#board')
 let room = ''
@@ -228,6 +229,12 @@ async function start(code){
       board.mark()
       paintZoom()
       sendScreenView()
+    },
+    /* 画面側からの「問題を写して」。つないでいる画面からのものだけ受ける */
+    onScanAsk: (d, from) => {
+      const t = board.tablet()
+      if (!t || from !== t.peer) return
+      startScan('camera')
     },
     onView: (d, from) => {
       if (!d) return
@@ -663,6 +670,8 @@ function wireChrome(){
     }
   }
 
+  $('#scanBtn').onclick = openScanMenu
+
   $('#imgBtn').onclick = () => $('#fileIn').click()
   $('#fileIn').onchange = e => {
     for (const f of e.target.files) addImageFile(f)
@@ -709,6 +718,7 @@ function openHelp(){
     ['画像で保存', 'Ctrl+S'],
     ['直線を15度ずつに / 正方形・正円', 'Shift を押しながら'],
     ['画像を貼る', 'Ctrl+V（スクショをそのまま貼れます）'],
+    ['問題を写す', 'C'],
   ]
   const table = el('div', {class: 'keys'})
   for (const [a, b] of rows){
@@ -722,6 +732,7 @@ function openHelp(){
       el('p', {class: 'note', text: 'マウスで書くときは、ペンを選んで出てくる「手ぶれ補正」を中か強に。ペン先が少し遅れて付いてくるぶん、線のがたつきが取れます。'}),
       el('p', {class: 'note', text: 'スマホで同じ合図の板を開いて「ペンタブ」ボタンを押すと、スマホが全画面の書く面だけになります。色も太さも補正もこちら（パソコン）で決めたものがそのまま乗ります。スマホ側は、指二本でちょん＝戻す、つまむ＝画面を動かす、右上の ✕ でやめる。横向きに持つと広く使えます。'}),
       el('p', {class: 'note', text: '手ぶれ補正は、ペンタブにしたスマホには同じ段でもずっと強く効きます（手のひらの面に画面まるごとが映っているので、指の震えも何倍かに伸びるため）。それでも線が震えるなら「強」か「極」へ。'}),
+      el('p', {class: 'note', text: '上の「問題を写す」（C）で、教科書やプリントの問題を板に置けます。写した一枚は、影も斜めの歪みも直して、白地に黒字の清書にしてから置きます。ペンタブのスマホがつながっていれば、ボタンはそのスマホのカメラを呼びます。撮ったあと、問題のかたまりを押すか、指でなぞって、使うところだけを選べます。'}),
       table,
     ],
   })
@@ -911,6 +922,57 @@ async function shrink(file, max){
   return cv.toDataURL(png ? 'image/png' : 'image/jpeg', 0.86)
 }
 
+/* ── 問題を写す ───────────────────────────── */
+
+/* 写すのはスマホの仕事。ペンタブが付いていればそちらに頼み、
+   いなければこの端末で写すか、撮ってある写真から読み取る */
+function openScanMenu(){
+  if (board.tablet()){ startScan('camera'); return }
+  const pad = (net?.peers || []).find(p => p.tab)
+  if (pad){
+    net.askScan(pad.id)
+    toast(pad.name + ' のスマホで写してください', 3600)
+    return
+  }
+  const sh = openSheet({
+    title: '問題を写す',
+    body: [
+      el('p', {class: 'share-lead', text: '紙を読み取って、白地に黒字に直してから板に置きます。影も、斜めから撮れた歪みも直します。'}),
+      el('div', {class: 'recents'}, [
+        el('button', {
+          class: 'recent', type: 'button',
+          html: '<b>カメラで写す</b><span>この端末のカメラを使います</span>',
+          onclick: () => { sh.close(); startScan('camera') },
+        }),
+        el('button', {
+          class: 'recent', type: 'button',
+          html: '<b>写真を選ぶ</b><span>撮ってある写真や、教科書を写した画像から</span>',
+          onclick: () => { sh.close(); startScan('file') },
+        }),
+      ]),
+      el('p', {class: 'note', text: 'スマホをペンタブにしていると、このボタンはスマホのカメラを呼びます。手元の紙を写して、そのままこの板に置けます。'}),
+    ],
+  })
+}
+
+function startScan(source, file){
+  openScan({source, file, onPlace: placeScan})
+}
+
+/* いま見えているところの真ん中に、読める大きさで置く。
+   ペンタブのスマホから置いても、映っているのはパソコンの画面なので同じところに出る */
+function placeScan(out){
+  if (!out || !out.url) return
+  const k = board.cam.k
+  const w = Math.max(160, Math.min(1800, board.R.W * 0.62 / k))
+  const h = w * out.h / out.w
+  const c = board.screenToWorld(board.R.W / 2, board.R.H / 2)
+  board.place({type: 'img', x: c.x - w / 2, y: c.y - h / 2, w, h, src: out.url})
+  board.mark()
+  if (board.tablet()) padWake('問題を置きました')
+  else toast('問題を置きました')
+}
+
 /* ── 画面を合わせる ───────────────────────── */
 
 function flyTo(d){
@@ -976,6 +1038,7 @@ function wireKeys(){
       else { board.cam.x += dx * 12 / board.cam.k; board.cam.y += dy * 12 / board.cam.k; board.mark() }
       return
     }
+    if (e.key === 'c' || e.key === 'C'){ openScanMenu(); return }
     if (e.key === '[' ){ gotoPage(curPage - 1); return }
     if (e.key === ']' ){ gotoPage(curPage + 1); return }
     if (e.key === 's' || e.key === 'S'){

@@ -651,3 +651,80 @@ kbd{
 @media (prefers-reduced-motion:reduce){
   *{transition-duration:.01ms !important;animation-duration:.01ms !important}
 }
+
+/* ── 問題を写す ─────────────────────────── */
+
+/* 写すあいだは全面を覆う。ペンタブのスマホでも、パソコンでも同じ面 */
+.scanv{
+  position:fixed;inset:0;z-index:60;
+  background:#0a0c0d;color:#f1f3f2;
+  touch-action:none;
+  animation:scanIn .18s ease-out;
+}
+@keyframes scanIn{from{opacity:0}to{opacity:1}}
+
+.scan-vid{
+  position:absolute;inset:0;width:100%;height:100%;
+  object-fit:cover;background:#000;
+}
+.scanv[data-state="busy"] .scan-vid,
+.scanv[data-state="done"] .scan-vid,
+.scanv[data-state="corner"] .scan-vid{display:none}
+
+.scan-cv{position:absolute;left:0;display:none;touch-action:none}
+.scanv[data-state="done"] .scan-cv,
+.scanv[data-state="corner"] .scan-cv{display:block}
+
+.scan-say{
+  position:absolute;top:0;left:0;right:0;height:46px;
+  display:grid;place-items:center;
+  padding:0 54px 0 14px;
+  font-size:12px;letter-spacing:.04em;text-align:center;
+  background:linear-gradient(rgba(8,10,12,.78),rgba(8,10,12,0));
+  pointer-events:none;
+}
+
+.scan-bar{
+  position:absolute;left:0;right:0;bottom:0;
+  min-height:86px;
+  padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+  display:flex;align-items:center;justify-content:center;gap:9px;
+  background:linear-gradient(rgba(8,10,12,0),rgba(8,10,12,.82));
+}
+
+.scan-shot{
+  width:62px;height:62px;border-radius:50%;
+  background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.3);
+  transition:transform .12s;
+}
+.scan-shot:active{transform:scale(.92)}
+.scan-gap{width:62px}
+
+.scan-b{
+  min-height:40px;padding:0 15px;
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.24);
+  background:rgba(255,255,255,.07);
+  color:#f1f3f2;
+  font-size:12.5px;letter-spacing:.04em;
+}
+.scan-b.go{background:var(--accent);border-color:transparent;color:#06201c;font-weight:700}
+
+.scan-x{
+  position:absolute;z-index:2;
+  top:max(9px,env(safe-area-inset-top));
+  right:max(9px,env(safe-area-inset-right));
+  width:34px;height:34px;
+  display:grid;place-items:center;border-radius:50%;
+  color:#f1f3f2;background:rgba(10,12,14,.5);
+  border:1px solid rgba(255,255,255,.2);
+}
+
+.scan-wait{
+  width:26px;height:26px;border-radius:50%;
+  border:2.5px solid rgba(255,255,255,.22);
+  border-top-color:#fff;
+  animation:scanSpin .8s linear infinite;
+}
+@keyframes scanSpin{to{transform:rotate(360deg)}}
