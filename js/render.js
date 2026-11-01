@@ -40,6 +40,10 @@ function getFn(src){
   return f
 }
 
+/* 画は src で覚える。縮めた写しは持たない。
+   板に出す大きさまで縮めるのは絵を描く側（GPU）の仕事で、
+   こちらで先に縮めておいても速くならなかった（実測。かえって少し遅い）。
+   写しを持つぶん覚える場所も増えるので、持たないほうがスマホには優しい */
 function getImg(src, onLoad){
   let im = imgCache.get(src)
   if (!im){
@@ -536,7 +540,11 @@ function drawBG(ctx, th, bg, cam, W, H){
 /* ── 画面ぜんたい ─────────────────────────── */
 
 export function createRenderer(canvas){
-  const ctx = canvas.getContext('2d', {alpha: false, desynchronized: true})
+  /* desynchronized は付けない。一コマ速く出る代わりに、描いている途中が
+     そのまま見えてしまう端末がある。この板は毎コマ一枚まるごと描き直すので、
+     消したところが見えて画面がちかつく（スマホで実際にそうなった）。
+     こちらが手ぶれ補正でわざと足している遅れに比べれば、一コマなど無いに等しい */
+  const ctx = canvas.getContext('2d', {alpha: false})
   let W = 0, H = 0, dpr = 1
 
   function resize(){
@@ -544,8 +552,13 @@ export function createRenderer(canvas){
     const r = canvas.getBoundingClientRect()
     W = Math.max(1, Math.round(r.width))
     H = Math.max(1, Math.round(r.height))
-    canvas.width = Math.round(W * dpr)
-    canvas.height = Math.round(H * dpr)
+    const cw = Math.round(W * dpr), ch = Math.round(H * dpr)
+    /* 同じ大きさでも、入れ直せば中身は消える。
+       消えたまま次の絵まで見える端末があるので、変わったときだけ入れる */
+    if (canvas.width !== cw || canvas.height !== ch){
+      canvas.width = cw
+      canvas.height = ch
+    }
   }
 
   function draw(opts){

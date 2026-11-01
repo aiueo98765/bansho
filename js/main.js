@@ -292,6 +292,8 @@ function sendLive(e){
    相手はこれに自分の見え方を合わせるので、モニターを見ながら書ける。 */
 let tvAt = 0
 let tvTimer = 0
+let tvSig = ''        /* 前に送った見え方。同じなら送らない */
+let tvSent = 0
 function sendScreenView(target){
   if (!net || me.tablet) return
   if (!target && !net.peers.some(p => p.tab)) return
@@ -306,12 +308,23 @@ function sendScreenView(target){
      そのまま渡すとペンタブ側の面が消えるので、送らずに前の姿のままにしておく */
   if (board.R.W < 2 || board.R.H < 2) return
   if (target){ net.screenView(view(), target); return }
+  /* 何も変わっていないなら送らない。
+     相手が書いている間、こちらは受け取るたびに syncUI を通るので、
+     そのつど送ると一秒に十回も届く。ペンタブ側はそのたびに画面を合わせ直し、
+     書いている最中の板が揺れる（実際に揺れた）。
+     落ちてもいい知らせなので、変わらなくても二秒に一度だけは流しておく */
+  const v = view()
+  const sig = JSON.stringify(v)
+  const t = performance.now()
+  if (sig === tvSig && t - tvSent < 2000) return
   /* 間引くが、捨てはしない。最後の見え方は必ず遅れて届ける */
   clearTimeout(tvTimer)
-  const wait = 100 - (performance.now() - tvAt)
+  const wait = 100 - (t - tvAt)
   if (wait > 0){ tvTimer = setTimeout(() => sendScreenView(), wait); return }
-  tvAt = performance.now()
-  net.screenView(view())
+  tvAt = t
+  tvSig = sig
+  tvSent = t
+  net.screenView(v)
 }
 
 /* 画面に乗っている道具箱などを避けて、書ける面を取る。
