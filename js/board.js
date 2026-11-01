@@ -12,9 +12,58 @@ import {uid} from './scene.js'
 export const SNAP = 16            /* 方眼に合わせるときの刻み */
 const MIN_K = 0.08, MAX_K = 24
 
-/* 手ぶれ補正の段。切・弱・中・強。
+/* 手ぶれ補正の段。切・弱・中・強・極。
    数はペン先が指に追いつく速さ。1 なら指のとおりにそのまま線になる。 */
-export const PULL = [1, 0.5, 0.3, 0.17]
+export const PULL = [1, 0.5, 0.3, 0.17, 0.1]
+
+/* ペンタブにしたスマホだけ、別の勘定で補正する。段はパソコンと共通。
+   数は「ペン先が指の何 px 後ろを行くか」（画面の上の距離）。
+
+   スマホは手のひらに乗る大きさの面で、パソコンの画面まるごとを映している。
+   指先の一ミリの震えが板の上では何倍にも引き伸ばされるので、
+   マウス向けの段では弱すぎる。
+
+   拍の数ではなく距離で決めてあるのは、報告の速い端末（S ペンなどは
+   マウスの倍以上の速さで位置を知らせる）ほど補正が効かなくなるのを避けるため。
+   距離で決めれば、どの端末でも同じだけ効く。 */
+export const LAG_PAD = [0, 9, 18, 34, 60]
+
+const PAD_EASE = 0.22            /* 速さの平均をとる強さ */
+const PAD_CREEP = 0.5            /* 止まって見えても、これだけは進む（px/拍） */
+
+/* スマホ流の補正を一拍ぶん進める。s は書いている最中の入れもの
+   （{lag, raw, mid, tip, vel}）、k は画面の倍率（遅れは画面の上の px で決めるため）。
+
+   遅れを距離で決めるので、一拍に sp px 進む手には sp/(sp + 遅れ) で寄せればいい
+   （釣り合ったところで、ちょうど遅れの分だけ後ろを行く）。
+   速く引けば勝手に 1 に近づいて追いつき、ゆっくり引けば深く効く。
+   震えが線に出るのはゆっくり引くときだけ、遅れが目につくのは速く引くときだけなので、
+   両方を同じ強さで相手にすると、どちらかが必ず不満になる。
+
+   二段がけ。一度なました位置をもう一度なます。一段を深くするより、
+   同じ遅れで細かい震えがよく落ちる。
+
+   試し（scripts/stab-test.mjs）が同じ式を呼べるように、閉じた中ではなく外に出してある。 */
+export function padStep(s, x, y, k){
+  const r = s.raw, v = s.vel
+  const dx = x - r.x, dy = y - r.y
+  r.x = x; r.y = y
+  if (v.on){
+    v.x += (dx - v.x) * PAD_EASE
+    v.y += (dy - v.y) * PAD_EASE
+  } else {
+    v.on = true; v.x = dx; v.y = dy
+  }
+  /* 速さは「向きもこめた平均」で測る。行き戻りの震えは足し合わせると打ち消えるので、
+     震えているだけの手を「速く動かしている」と読み違えない。
+     進んだ長さで測ると、震えが大きいほど補正がゆるむ（やりたいことの逆になる）。 */
+  const sp = Math.hypot(v.x, v.y) * k + PAD_CREEP
+  const a = sp / (sp + s.lag)
+  const m = s.mid, t = s.tip
+  m.x += (x - m.x) * a; m.y += (y - m.y) * a
+  t.x += (m.x - t.x) * a; t.y += (m.y - t.y) * a
+  return a
+}
 
 const CURSORS = {
   pen: 'crosshair', marker: 'crosshair', eraser: 'none', line: 'crosshair',
@@ -33,7 +82,7 @@ export function createBoard(opt){
     markCol: '#ffd84d',     /* 蛍光ペンは別の色を覚える */
     sz: 3.2,
     markSz: 5,
-    smooth: 2,              /* 手ぶれ補正の段。0=切 1=弱 2=中 3=強 */
+    smooth: 2,              /* 手ぶれ補正の段。0=切 1=弱 2=中 3=強 4=極 */
     mode: 'pen',            /* pen | marker */
     fill: false,
     dash: false,
@@ -603,8 +652,11 @@ export function createBoard(opt){
     drag = {
       kind: 'stroke', el, sent: 0,
       pull: pullFor(e),
+      lag: lagFor(e),            /* 0 より大きければスマホ流（距離で遅らせる二段がけ） */
       tip: {x: w.x, y: w.y},     /* 実際に線になる位置 */
+      mid: {x: w.x, y: w.y},     /* 二段がけの一段目 */
       raw: {x: w.x, y: w.y},     /* 指（マウス）の位置 */
+      vel: {on: false, x: 0, y: 0},   /* 向きもこめた速さの平均 */
       press: el.pts[2],
     }
     preview = el
@@ -615,14 +667,30 @@ export function createBoard(opt){
   function pullFor(e){
     const a = PULL[st.smooth] ?? 1
     if (a >= 1) return 0
-    /* ペンタブは手が直接動かしている感覚が要るので、遅れを半分に抑える */
+    /* ペンタブは手が直接動かしている感覚が要るので、遅れを半分に抑える。
+       スマホをペンタブにしているときは逆（下の lagFor が受け持つ）。 */
     return e.pointerType === 'pen' ? Math.min(1, a * 1.7) : a
+  }
+
+  /* スマホをペンタブにしているときの遅れ（画面の上の px）。0 なら上の pullFor に任せる。
+     二段がけなので、一段あたりは半分ずつ持つ。 */
+  function lagFor(e){
+    if (!tablet) return 0
+    const L = LAG_PAD[st.smooth] || 0
+    if (!L) return 0
+    /* 指はペンより先が太くて狙いが粗い。もう一段きつく締める */
+    return (e.pointerType === 'touch' ? L * 1.35 : L) / 2
   }
 
   /* 指の位置をペン先に流し込む。補正が切なら素通し */
   function feed(x, y, p){
     const el = drag.el
-    drag.raw.x = x; drag.raw.y = y; drag.press = p
+    drag.press = p
+    if (drag.lag){
+      padStep(drag, x, y, cam.k)     /* スマホ流。指の位置も中で進める */
+      return pushPt(el, drag.tip.x, drag.tip.y, p)
+    }
+    drag.raw.x = x; drag.raw.y = y
     if (!drag.pull) return pushPt(el, x, y, p)
     const t = drag.tip
     t.x += (x - t.x) * drag.pull
@@ -630,16 +698,25 @@ export function createBoard(opt){
     return pushPt(el, t.x, t.y, p)
   }
 
-  /* 指を離したら、残っている遅れを詰めて指の位置まで伸ばす */
+  /* 指を離したら、残っている遅れを詰めて指の位置まで伸ばす。
+     ここは線の形を閉じるだけなので、速さは問わずきびきび寄せる */
   function catchUp(){
-    if (!drag.pull) return
-    const el = drag.el, t = drag.tip, r = drag.raw
+    if (!drag.pull && !drag.lag) return
+    const el = drag.el, t = drag.tip, m = drag.mid, r = drag.raw
     const near = 0.5 / cam.k
-    for (let i = 0; i < 40; i++){
+    const a = drag.lag ? 0.3 : drag.pull
+    for (let i = 0; i < 120; i++){
       const dx = r.x - t.x, dy = r.y - t.y
       if (dx * dx + dy * dy < near * near) break
-      t.x += dx * drag.pull
-      t.y += dy * drag.pull
+      if (drag.lag){
+        m.x += (r.x - m.x) * a
+        m.y += (r.y - m.y) * a
+        t.x += (m.x - t.x) * a
+        t.y += (m.y - t.y) * a
+      } else {
+        t.x += dx * a
+        t.y += dy * a
+      }
       pushPt(el, t.x, t.y, drag.press)
     }
     pushPt(el, r.x, r.y, drag.press)
@@ -649,7 +726,7 @@ export function createBoard(opt){
     const n = el.pts.length
     /* 近すぎる点は捨てる。拡大しているときほど細かく拾う。
        補正中はペン先が小刻みに進むので、拾う間隔も細かくする */
-    const min = (drag && drag.pull ? 0.4 : 1.1) / cam.k
+    const min = (drag && (drag.pull || drag.lag) ? 0.4 : 1.1) / cam.k
     if (n >= 3){
       const dx = x - el.pts[n - 3], dy = y - el.pts[n - 2]
       if (dx * dx + dy * dy < min * min) return false

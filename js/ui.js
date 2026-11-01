@@ -165,9 +165,12 @@ export function buildOpts(host, st, api){
     add(sizes(SIZES, st.sz, s => api.set({sz: s})))
   }
   if (tool === 'pen' || tool === 'marker'){
-    add(seg('手ぶれ補正', [[0, '切'], [1, '弱'], [2, '中'], [3, '強']], st.smooth,
+    add(seg('手ぶれ補正', [[0, '切'], [1, '弱'], [2, '中'], [3, '強'], [4, '極']], st.smooth,
       v => api.set({smooth: v}),
-      'ペン先が指を少し遅れて追いかけます。マウスで書くときは「中」か「強」が書きやすい'))
+      (api.pad
+        ? 'ペン先が指を少し遅れて追いかけます。ペンタブにしたスマホには、同じ段でもずっと強く効きます（手のひらの面に画面まるごとが映っているので、指の震えも何倍かに伸びるため）'
+        : 'ペン先が指を少し遅れて追いかけます。マウスで書くときは「中」か「強」が書きやすい')
+      + '。強くするほど角は丸くなります'))
   }
   if (tool === 'text') add(sizes([16, 22, 30, 44], st.textSize, s => api.set({textSize: s}), 44))
   if (tool === 'math') add(sizes([22, 30, 42, 60], st.mathSize, s => api.set({mathSize: s}), 60))

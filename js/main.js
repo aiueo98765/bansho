@@ -197,9 +197,11 @@ async function start(code){
         exitTablet()
         toast('つないでいた画面がいなくなりました')
       }
+      syncUI()
     },
     onTabletHello: peerId => {
       sendScreenView(peerId)
+      syncUI()
       if (!padSeen.has(peerId)){
         padSeen.add(peerId)
         toast('スマホがペンタブになりました。道具と色はこちらで決めます', 3600)
@@ -436,6 +438,9 @@ function applyTheme(){
 
 let uiSig = ''
 
+/* スマホをペンタブにしてつないでいる人がいるか */
+const padOn = () => !!net?.peers.some(p => p.tab)
+
 /* 道具の設定欄は、関わる値が変わったときだけ組み直す。
    一筆ごとに作り直すと、押しかけのボタンが消えて取りこぼす */
 function syncUI(){
@@ -443,7 +448,7 @@ function syncUI(){
   const s = board.st
   const sig = [s.tool, s.col, s.sz, s.markCol, s.markSz, s.smooth, s.textSize, s.mathSize,
     s.eraseR, s.erasePart, s.arrow, s.fill, s.dash, s.snap, s.theme,
-    !!board.tablet(), board.selection.length].join('|')
+    !!board.tablet(), padOn(), board.selection.length].join('|')
   if (sig !== uiSig){
     uiSig = sig
     buildOptsNow()
@@ -475,7 +480,7 @@ function buildOptsNow(){
     },
     duplicate: () => board.duplicate(),
     del: () => board.deleteSelection(),
-    tablet: !!board.tablet(),
+    pad: padOn(),
   })
 }
 
@@ -716,6 +721,7 @@ function openHelp(){
       el('p', {class: 'note', text: '数式は TeX の書き方です（\\frac{1}{2} で分数、x^2 で2乗）。ボタンからも入れられます。グラフは y= の右側を書くだけで引けます。'}),
       el('p', {class: 'note', text: 'マウスで書くときは、ペンを選んで出てくる「手ぶれ補正」を中か強に。ペン先が少し遅れて付いてくるぶん、線のがたつきが取れます。'}),
       el('p', {class: 'note', text: 'スマホで同じ合図の板を開いて「ペンタブ」ボタンを押すと、スマホが全画面の書く面だけになります。色も太さも補正もこちら（パソコン）で決めたものがそのまま乗ります。スマホ側は、指二本でちょん＝戻す、つまむ＝画面を動かす、右上の ✕ でやめる。横向きに持つと広く使えます。'}),
+      el('p', {class: 'note', text: '手ぶれ補正は、ペンタブにしたスマホには同じ段でもずっと強く効きます（手のひらの面に画面まるごとが映っているので、指の震えも何倍かに伸びるため）。それでも線が震えるなら「強」か「極」へ。'}),
       table,
     ],
   })
@@ -973,11 +979,11 @@ function wireKeys(){
     if (e.key === '[' ){ gotoPage(curPage - 1); return }
     if (e.key === ']' ){ gotoPage(curPage + 1); return }
     if (e.key === 's' || e.key === 'S'){
-      const v = Math.max(0, Math.min(3, board.st.smooth + (e.shiftKey ? 1 : -1)))
+      const v = Math.max(0, Math.min(4, board.st.smooth + (e.shiftKey ? 1 : -1)))
       board.st.smooth = v
       store.setPref({smooth: v})
       syncUI()
-      toast('手ぶれ補正：' + ['切', '弱', '中', '強'][v])
+      toast('手ぶれ補正：' + ['切', '弱', '中', '強', '極'][v])
       return
     }
     const t = TOOLKEY[e.key.toLowerCase()]
