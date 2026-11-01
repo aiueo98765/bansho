@@ -12,14 +12,41 @@ import {scan, toRGBA, cropGray} from './scan.js'
 import {el} from './ui.js'
 
 const SAY = {
+  ask: 'カメラをひらきます',
   live: '問題が入るように構えて、まるいボタンで撮ります',
   busy: '読み取っています…',
   done: 'どこを板に置きますか。かたまりを押すか、指でなぞって囲みます',
   corner: '紙の四隅に合わせてください',
-  deny: 'カメラを使えませんでした。写真を選んでも読み取れます',
 }
 
-export function openScan({source = 'camera', file = null, onPlace, onClose} = {}){
+/* カメラが開かなかった理由を、その場に出す。
+   スマホはパソコンと違って、断られた訳が見えないまま終わりやすい */
+function whyDenied(e){
+  const n = (e && e.name) || ''
+  if (n === 'NotAllowedError' || n === 'PermissionDeniedError'){
+    return 'カメラが断られました。ブラウザの設定でこの板にカメラを許してください。' +
+      'アプリの中で開いたページだと使えないことがあります（Safari や Chrome で開き直すと通ります）'
+  }
+  if (n === 'NotFoundError' || n === 'DevicesNotFoundError') return 'この端末にカメラが見つかりませんでした'
+  if (n === 'NotReadableError' || n === 'TrackStartError') return 'カメラが他のアプリに使われています。そちらを閉じてからもう一度'
+  if (n === 'SecurityError') return 'この開きかたではカメラを使えません'
+  return 'カメラを開けませんでした（' + (n || '訳が分かりません') + '）'
+}
+
+/* カメラを呼べる場所かどうか。http:// で開いていると、そもそも口がない */
+function camReady(){
+  if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'){
+    return 'この住所ではカメラを使えません。https の板（公開しているほう）を開いてください'
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    return 'このブラウザからはカメラを呼べませんでした。写真を選べば読み取れます'
+  }
+  return ''
+}
+
+/* needTap：パソコンから頼まれて開いたときは、スマホで一度押してもらってから
+   カメラを呼ぶ。触っていない画面からいきなり呼ぶと、断られる端末がある */
+export function openScan({source = 'camera', file = null, needTap = false, onPlace, onClose, onOpen} = {}){
   const root = el('div', {class: 'scanv'})
   const vid = el('video', {class: 'scan-vid', playsinline: '', muted: '', autoplay: ''})
   const cv = el('canvas', {class: 'scan-cv'})
@@ -30,8 +57,18 @@ export function openScan({source = 'camera', file = null, onPlace, onClose} = {}
     html: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     onclick: () => close(),
   })
+  /* パソコンから頼まれたときに出す、大きな一押し。
+     ここを押した指が「触った」証しになり、カメラが開く */
+  const big = el('button', {
+    class: 'scan-big', type: 'button',
+    onclick: startCam,
+    html: '<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M3.5 8.6a2 2 0 0 1 2-2h2l1.3-2h6.4l1.3 2h2a2 2 0 0 1 2 2v8.8a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>' +
+      '<circle cx="12" cy="12.8" r="3.7"/></svg><span>カメラをひらく</span>',
+  })
   vid.muted = true
-  root.append(vid, cv, say, bar, x)
+  root.append(vid, cv, big, say, bar, x)
   document.body.append(root)
 
   let stream = null, track = null
@@ -44,12 +81,20 @@ export function openScan({source = 'camera', file = null, onPlace, onClose} = {}
   let drag = null
 
   /* ── 面を組み替える ── */
-  function go(s){
+  function go(s, msg){
     state = s
     root.dataset.state = s
-    say.textContent = SAY[s] || ''
+    say.textContent = msg || SAY[s] || ''
     bar.textContent = ''
-    if (s === 'live'){
+    if (s === 'ask'){
+      bar.append(btn('写真を選ぶ', 'ghost', pickFile), btn('やめる', 'ghost', () => close()))
+    } else if (s === 'deny'){
+      bar.append(
+        btn('もう一度ひらく', 'go', startCam),
+        btn('写真を選ぶ', 'ghost', pickFile),
+        btn('やめる', 'ghost', () => close()),
+      )
+    } else if (s === 'live'){
       bar.append(
         track && torchable() ? btn('灯り', 'ghost', toggleTorch) : el('span', {class: 'scan-gap'}),
         el('button', {class: 'scan-shot', type: 'button', 'aria-label': '撮る', onclick: capture}),
@@ -79,17 +124,34 @@ export function openScan({source = 'camera', file = null, onPlace, onClose} = {}
   }
 
   /* ── カメラ ── */
+
+  /* 注文は三段。細かく頼んで駄目なら、ゆるめて頼み直す。
+     端末によっては、大きさの注文を付けただけで断られる */
+  const WANTS = [
+    {video: {facingMode: {ideal: 'environment'}, width: {ideal: 2560}, height: {ideal: 1440}}, audio: false},
+    {video: {facingMode: {ideal: 'environment'}}, audio: false},
+    {video: true, audio: false},
+  ]
+
   async function startCam(){
+    const why = camReady()
+    if (why){ go('deny', why); return }
     go('live')
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: {facingMode: {ideal: 'environment'}, width: {ideal: 2560}, height: {ideal: 1440}},
-        audio: false,
-      })
-    } catch (e){
-      say.textContent = SAY.deny
-      bar.textContent = ''
-      bar.append(btn('写真を選ぶ', 'go', pickFile), btn('やめる', 'ghost', () => close()))
+    let err = null
+    for (const want of WANTS){
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(want)
+        err = null
+        break
+      } catch (e){
+        err = e
+        /* 断られたのなら、ゆるめて頼み直しても同じこと */
+        if (e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError')) break
+      }
+    }
+    if (!stream){
+      console.warn('[板書] カメラが開きませんでした', err)
+      go('deny', whyDenied(err))
       return
     }
     track = stream.getVideoTracks()[0]
@@ -410,8 +472,10 @@ export function openScan({source = 'camera', file = null, onPlace, onClose} = {}
   window.addEventListener('resize', onResize)
   document.addEventListener('keydown', onKey)
 
+  onOpen?.()
   if (source === 'file' && file) fromFile(file)
   else if (source === 'file') pickFile()
+  else if (needTap) go('ask')
   else startCam()
 
   return {close}

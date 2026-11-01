@@ -293,7 +293,7 @@ html[data-dark="1"] .opt.on{color:#14201e}
 
 /* ペンタブのあいだ、スマホ側は書く面だけにする。
    道具も色も濃さもパソコンで決めるので、こちらに操作するものは要らない */
-#padExit,#padHint{display:none}
+#padExit,#padHint,#padScan{display:none}
 
 body.tabletmode #top,
 body.tabletmode #tools,
@@ -317,6 +317,25 @@ body.tabletmode #padExit{
 body.tabletmode #padExit:hover,
 body.tabletmode #padExit:focus-visible,
 body.tabletmode.padwake #padExit{opacity:.95}
+
+/* 問題を写すボタン。出口と同じで、触れたときだけ濃くなる。
+   パソコンから呼べなかったときに、スマホだけで写せる道をひとつ残しておく */
+body.tabletmode #padScan{
+  position:fixed;z-index:40;
+  top:max(10px,env(safe-area-inset-top));
+  right:calc(max(10px,env(safe-area-inset-right)) + 42px);
+  width:34px;height:34px;
+  display:grid;place-items:center;
+  border-radius:50%;
+  color:var(--fg-2);
+  background:var(--panel);
+  border:1px solid var(--line);
+  opacity:.22;
+  transition:opacity .25s;
+}
+body.tabletmode #padScan:hover,
+body.tabletmode #padScan:focus-visible,
+body.tabletmode.padwake #padScan{opacity:.95}
 
 body.tabletmode #padHint{
   position:fixed;z-index:40;
@@ -676,13 +695,28 @@ kbd{
 .scanv[data-state="corner"] .scan-cv{display:block}
 
 .scan-say{
-  position:absolute;top:0;left:0;right:0;height:46px;
-  display:grid;place-items:center;
-  padding:0 54px 0 14px;
-  font-size:12px;letter-spacing:.04em;text-align:center;
-  background:linear-gradient(rgba(8,10,12,.78),rgba(8,10,12,0));
+  position:absolute;top:0;left:0;right:0;min-height:46px;
+  display:flex;align-items:center;justify-content:center;
+  padding:11px 54px 11px 14px;
+  font-size:12px;line-height:1.55;letter-spacing:.04em;text-align:center;
+  background:linear-gradient(rgba(8,10,12,.86),rgba(8,10,12,.5) 72%,rgba(8,10,12,0));
   pointer-events:none;
 }
+
+/* パソコンから頼まれて開いたときの、大きな一押し。
+   触っていない画面からカメラを呼ぶと断る端末があるので、ここを挟む */
+.scan-big{
+  position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);
+  display:none;flex-direction:column;align-items:center;gap:13px;
+  padding:28px 38px;border-radius:24px;
+  color:#f1f3f2;
+  background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.24);
+  font-size:14px;letter-spacing:.06em;
+}
+.scanv[data-state="ask"] .scan-big{display:flex}
+.scan-big:active{transform:translate(-50%,-50%) scale(.97)}
 
 .scan-bar{
   position:absolute;left:0;right:0;bottom:0;

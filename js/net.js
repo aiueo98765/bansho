@@ -244,7 +244,7 @@ export function createNet(opts){
     cursor: d => fire(acts?.cu, d),
     view: d => fire(acts?.vw, d),
     laser: d => fire(acts?.lz, d),
-    askScan: target => fire(acts?.cs, {}, target),
+    askScan: (target, d) => fire(acts?.cs, d || {}, target),
     screenView: (d, target) => fire(acts?.tv, d, target),
     tabletCam: (d, target) => fire(acts?.tc, d, target),
     hello: () => { const me = getMe?.() || {}; fire(acts?.wh, {n: me.name, c: me.col, t: me.tablet ? 1 : 0}) },

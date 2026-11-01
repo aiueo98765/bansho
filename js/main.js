@@ -230,11 +230,17 @@ async function start(code){
       paintZoom()
       sendScreenView()
     },
-    /* 画面側からの「問題を写して」。つないでいる画面からのものだけ受ける */
+    /* 「問題を写して」。ペンタブ側は受けて開き、開いたことを返す。
+       画面側は、その返事ではじめて「スマホに出た」と分かる */
     onScanAsk: (d, from) => {
+      if (d && d.ok){ scanAcked(); return }
       const t = board.tablet()
       if (!t || from !== t.peer) return
-      startScan('camera')
+      startScan('camera', null, {
+        needTap: true,                            /* 触っていない画面からカメラは呼べない */
+        onOpen: () => net?.askScan(from, {ok: 1}),
+      })
+      padWake('問題を写します')
     },
     onView: (d, from) => {
       if (!d) return
@@ -642,10 +648,15 @@ function wireChrome(){
   $('#shareBtn').onclick = openShare
   $('#tabletBtn').onclick = toggleTablet
   $('#padExit').onclick = exitTablet
+  /* 写すときだけ、スマホにもうひとつボタンを出す。
+     押した指が「触った」証しになるので、ここからならカメラが開く */
+  $('#padScan').onclick = () => { padWake(''); startScan('camera') }
 
-  /* 全画面から抜けたら（戻るしぐさ・Esc）ペンタブも畳む */
+  /* 全画面から抜けたら（戻るしぐさ・Esc）ペンタブも畳む。
+     ただし写している間は別。カメラを許すか聞かれると全画面が外れる端末がある */
   for (const ev of ['fullscreenchange', 'webkitfullscreenchange']){
     document.addEventListener(ev, () => {
+      if (scanning) return
       if (board.tablet() && !document.fullscreenElement && !document.webkitFullscreenElement) exitTablet()
     })
   }
@@ -929,11 +940,7 @@ async function shrink(file, max){
 function openScanMenu(){
   if (board.tablet()){ startScan('camera'); return }
   const pad = (net?.peers || []).find(p => p.tab)
-  if (pad){
-    net.askScan(pad.id)
-    toast(pad.name + ' のスマホで写してください', 3600)
-    return
-  }
+  if (pad){ askPadScan(pad); return }
   const sh = openSheet({
     title: '問題を写す',
     body: [
@@ -955,8 +962,53 @@ function openScanMenu(){
   })
 }
 
-function startScan(source, file){
-  openScan({source, file, onPlace: placeScan})
+/* ペンタブのスマホに頼む。返事が来るまでは「出た」と言い切らない。
+   こちらからはスマホの画面が見えないので、黙って失敗されるのがいちばん困る */
+let scanWait = 0
+function askPadScan(pad){
+  net.askScan(pad.id)
+  toast(pad.name + ' のスマホに出しています…', 2800)
+  clearTimeout(scanWait)
+  scanWait = setTimeout(() => {
+    scanWait = 0
+    const sh = openSheet({
+      title: 'スマホが応えませんでした',
+      body: [
+        el('p', {class: 'share-lead', text: 'スマホ側で写す面が開かなかったようです。'}),
+        el('p', {class: 'note', text: 'スマホの画面を一度触ってから、もう一度押してみてください。'}),
+        el('p', {class: 'note', text: 'スマホの右上にある写すボタン（カメラの絵）からも開けます。ペンタブの画面に触れると出てきます。'}),
+        el('p', {class: 'note', text: 'スマホが古い板書を開いたままだと、この合図を受け取れません。スマホで板を開き直してください。'}),
+        el('div', {class: 'recents'}, [
+          el('button', {
+            class: 'recent', type: 'button',
+            html: '<b>このパソコンで写真を選ぶ</b><span>スマホで撮った写真を送ってもらった場合など</span>',
+            onclick: () => { sh.close(); startScan('file') },
+          }),
+        ]),
+      ],
+    })
+  }, 4200)
+}
+
+function scanAcked(){
+  if (!scanWait) return
+  clearTimeout(scanWait)
+  scanWait = 0
+  toast('スマホに出しました。スマホを見てください', 3600)
+}
+
+let scanning = null
+function startScan(source, file, more){
+  if (scanning) return
+  scanning = openScan({
+    source, file, ...(more || {}),
+    onPlace: placeScan,
+    onClose: () => {
+      scanning = null
+      /* カメラを許すか聞かれると、全画面が外れることがある。ペンタブのままなら戻す */
+      if (board.tablet()) goFull()
+    },
+  })
 }
 
 /* いま見えているところの真ん中に、読める大きさで置く。
