@@ -34,7 +34,6 @@ export function createBoard(opt){
     sz: 3.2,
     markSz: 5,
     smooth: 2,              /* 手ぶれ補正の段。0=切 1=弱 2=中 3=強 */
-    tabletDim: 1,           /* ペンタブのとき板をどれだけ映すか。0=映さない 1=うすく 2=そのまま */
     mode: 'pen',            /* pen | marker */
     fill: false,
     dash: false,
@@ -63,10 +62,11 @@ export function createBoard(opt){
   /* ペンタブモード。相手の画面に映っている範囲へ自分のカメラを合わせ、
      描いた線をそのまま相手の板に落とす。手元の板は見ずに相手の画面を見て書く。 */
   let tablet = null               /* {peer, name, tv} */
-  let tabletPad = {t: 8, r: 8, b: 8, l: 8}
+  let tabletPad = {t: 0, r: 0, b: 0, l: 0}
   let echoAt = 0
   let echoTimer = 0
   let fitting = false
+  let labelOn = false             /* 枠の名札。触れたときだけ出す */
 
   /* ── 入口 ───────────────────────────────── */
 
@@ -121,9 +121,8 @@ export function createBoard(opt){
       preview: preview ? [preview] : null,
       ghost: ghostLayer,
       onImgLoad: mark,
-      /* ペンタブのときは板を薄くして、相手の画面に映っている範囲だけ枠で囲う */
-      dim: tablet ? [0, 0.2, 1][st.tabletDim] : 1,
-      frame: tablet ? {...tabletFit(), waiting: !tablet.tv, name: tablet.name} : null,
+      /* ペンタブのときは、相手の画面に映っている範囲を枠で囲う。中身はそのまま映す */
+      frame: tablet ? {...tabletFit(), waiting: !tablet.tv, name: labelOn ? tablet.name : ''} : null,
     })
     dirty = false
     if (laser.length || live.size) mark()
@@ -224,6 +223,28 @@ export function createBoard(opt){
 
   api.tablet = () => tablet
   api.tabletFrame = tabletFit
+  api.showFrameLabel = v => { if (labelOn !== v){ labelOn = v; mark() } }
+
+  /* 筆の持ち方はパソコンで決める。こちらは受け取って同じにするだけ */
+  const MIRROR = ['tool', 'col', 'sz', 'markCol', 'markSz', 'smooth', 'fill', 'dash',
+    'arrow', 'eraseR', 'erasePart', 'snap', 'textSize', 'mathSize', 'mode']
+
+  api.toolState = () => {
+    const o = {}
+    for (const k of MIRROR) o[k] = st[k]
+    o.theme = st.theme
+    return o
+  }
+
+  api.applyTools = s => {
+    if (!s) return false
+    let changed = false
+    for (const k of MIRROR){
+      if (s[k] != null && st[k] !== s[k]){ st[k] = s[k]; changed = true }
+    }
+    if (changed){ applyCursor(); mark() }
+    return changed
+  }
 
   api.setTabletPad = p => {
     if (!tablet) return
@@ -250,6 +271,7 @@ export function createBoard(opt){
 
   api.applyScreenView = (tv, from) => {
     if (!tablet || from !== tablet.peer || !tv) return
+    if (!(tv.w > 1) || !(tv.h > 1) || !Number.isFinite(tv.k) || tv.k <= 0) return
     const first = !tablet.tv
     tablet.tv = tv
     /* こちらから動かした直後に届いたものは、ひとつ前の姿。
@@ -419,6 +441,7 @@ export function createBoard(opt){
       const f = tabletFit()
       if (!f || pos.sx < f.x || pos.sx > f.x + f.w || pos.sy < f.y || pos.sy > f.y + f.h){
         drag = {kind: 'pan', sx: pos.sx, sy: pos.sy, cx: cam.x, cy: cam.y}
+        hooks.onBezel?.()
         return
       }
     }
@@ -474,7 +497,12 @@ export function createBoard(opt){
   function onUp(e){
     active.delete(e.pointerId)
     if (e.pointerType === 'pen') penDown = false
-    if (pinch && active.size < 2) pinch = null
+    if (pinch && active.size < 2){
+      /* 指二本をちょん、と置いただけなら「戻す」。
+         ボタンの無いペンタブでは、これが唯一の取り消しになる */
+      if (performance.now() - pinch.t0 < 300 && pinch.moved < 16) hooks.onTwoTap?.()
+      pinch = null
+    }
     if (!drag) { applyCursor(); return }
     const pos = evPos(e)
     const w = screenToWorld(pos.sx, pos.sy)
@@ -515,6 +543,8 @@ export function createBoard(opt){
       mid,
       world: screenToWorld(mid.sx, mid.sy),
       k: cam.k,
+      t0: performance.now(),
+      moved: 0,
     }
   }
 
@@ -523,6 +553,8 @@ export function createBoard(opt){
     if (!t){ pinch = null; return }
     const d = Math.hypot(t[0].sx - t[1].sx, t[0].sy - t[1].sy) || 1
     const mid = {sx: (t[0].sx + t[1].sx) / 2, sy: (t[0].sy + t[1].sy) / 2}
+    pinch.moved += Math.abs(d - pinch.d) + Math.hypot(mid.sx - pinch.mid.sx, mid.sy - pinch.mid.sy)
+    pinch.mid = mid
     cam.k = Math.max(MIN_K, Math.min(MAX_K, pinch.k * (d / pinch.d)))
     /* つまんだ点が指の真ん中に残るように寄せる */
     cam.x = pinch.world.x - (mid.sx - R.W / 2) / cam.k

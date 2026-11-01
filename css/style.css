@@ -291,36 +291,46 @@ html[data-dark="1"] .opt.on{color:#14201e}
 
 /* ── ペンタブモード ─────────────────────── */
 
-#tabletBar{display:none}
-body.tabletmode #tabletBar{
-  position:fixed;z-index:31;
+/* ペンタブのあいだ、スマホ側は書く面だけにする。
+   道具も色も濃さもパソコンで決めるので、こちらに操作するものは要らない */
+#padExit,#padHint{display:none}
+
+body.tabletmode #top,
+body.tabletmode #tools,
+body.tabletmode #opts,
+body.tabletmode #bottom,
+body.tabletmode #history{display:none}
+
+body.tabletmode #padExit{
+  position:fixed;z-index:40;
+  top:max(10px,env(safe-area-inset-top));
+  right:max(10px,env(safe-area-inset-right));
+  width:34px;height:34px;
+  display:grid;place-items:center;
+  border-radius:50%;
+  color:var(--fg-2);
+  background:var(--panel);
+  border:1px solid var(--line);
+  opacity:.22;
+  transition:opacity .25s;
+}
+body.tabletmode #padExit:hover,
+body.tabletmode #padExit:focus-visible,
+body.tabletmode.padwake #padExit{opacity:.95}
+
+body.tabletmode #padHint{
+  position:fixed;z-index:40;
   left:50%;transform:translateX(-50%);
-  top:66px;
-  display:flex;align-items:center;gap:9px;
-  height:32px;padding:0 6px 0 12px;
-  border-radius:16px;
-  background:var(--accent);
-  color:#fff;
-  font-size:12px;font-weight:700;letter-spacing:.08em;
-  box-shadow:var(--shadow);
+  bottom:max(12px,env(safe-area-inset-bottom));
+  display:block;
+  padding:7px 15px;border-radius:13px;
+  background:rgba(22,28,30,.82);
+  color:#f2f4f2;
+  font-size:11.5px;letter-spacing:.04em;
+  pointer-events:none;
+  opacity:0;transition:opacity .35s;
 }
-html[data-dark="1"] body.tabletmode #tabletBar{color:#102320}
-#tabletBar .pad-dot{
-  width:7px;height:7px;border-radius:50%;
-  background:currentColor;
-  animation:pulse 1.8s infinite;
-}
-#tabletBar button{
-  height:22px;padding:0 10px;border-radius:11px;
-  background:rgba(255,255,255,.22);
-  font-size:11px;font-weight:700;
-}
-#tabletBar button:hover{background:rgba(255,255,255,.34)}
-body.tabletmode #tabletBtn{background:var(--accent-soft);color:var(--accent-ink)}
-/* ペンタブのときは、板ではなく相手の画面に合わせているので手元の操作は隠す */
-body.tabletmode #bgRow,
-body.tabletmode #bottom .group:first-child{display:none}
-body.optshide #opts{display:none}
+body.tabletmode.padwake #padHint{opacity:1}
 
 .peers>span.pad{border-radius:7px;font-size:13px}
 

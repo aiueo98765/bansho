@@ -71,6 +71,15 @@ function boot(){
       onLiveStroke: sendLive,
       onLiveEnd: id => net?.live({id, done: 1}),
       onLaser: (x, y) => net?.laser({x, y}),
+      /* 指二本でちょん＝戻す。ボタンを出さないので、これが取り消しの手 */
+      onTwoTap: () => {
+        if (!scene.canUndo){ if (board.tablet()) padWake('戻せるものがありません'); return }
+        scene.undo()
+        board.clearSelection()
+        syncUI()
+        if (board.tablet()) padWake('ひとつ戻しました')
+      },
+      onBezel: () => { if (board.tablet()) padWake('') },
       editText, editMath, editGraph, addGraph,
     },
   })
@@ -79,7 +88,6 @@ function boot(){
   board.st.col = pref.col2 || (THEMES[board.st.theme].dark ? INK.dark[0] : INK.light[0])
   if (pref.markCol) board.st.markCol = pref.markCol
   if (pref.smooth != null) board.st.smooth = pref.smooth
-  if (pref.tabletDim != null) board.st.tabletDim = pref.tabletDim
   applyTheme()
 
   buildTools($('#tools'), t => board.setTool(t))
@@ -190,8 +198,24 @@ async function start(code){
         toast('つないでいた画面がいなくなりました')
       }
     },
-    onTabletHello: peerId => sendScreenView(peerId),
-    onScreenView: (d, from) => board.applyScreenView(d, from),
+    onTabletHello: peerId => {
+      sendScreenView(peerId)
+      if (!padSeen.has(peerId)){
+        padSeen.add(peerId)
+        toast('スマホがペンタブになりました。道具と色はこちらで決めます', 3600)
+      }
+    },
+    onScreenView: (d, from) => {
+      const t = board.tablet()
+      if (t && from === t.peer && d && d.s){
+        if (d.s.theme && d.s.theme !== board.st.theme){
+          board.st.theme = d.s.theme
+          applyTheme()
+        }
+        if (board.applyTools(d.s)) syncUI()
+      }
+      board.applyScreenView(d, from)
+    },
     onTabletCam: (d, from) => {
       /* ペンタブからの「ここを映して」。ペンタブ同士では受けない */
       if (me.tablet || !d || !net) return
@@ -256,11 +280,16 @@ let tvTimer = 0
 function sendScreenView(target){
   if (!net || me.tablet) return
   if (!target && !net.peers.some(p => p.tab)) return
+  /* 見え方といっしょに、筆の持ち方も渡す。ペンタブ側は何も決めない */
   const view = () => ({
     x: board.cam.x, y: board.cam.y, k: board.cam.k,
     w: board.R.W, h: board.R.H,
     p: board.st.pageId, bg: board.st.bg,
+    s: board.toolState(),
   })
+  /* 窓を畳んだりタブを裏に回すと、画面の大きさが 0 で取れることがある。
+     そのまま渡すとペンタブ側の面が消えるので、送らずに前の姿のままにしておく */
+  if (board.R.W < 2 || board.R.H < 2) return
   if (target){ net.screenView(view(), target); return }
   /* 間引くが、捨てはしない。最後の見え方は必ず遅れて届ける */
   clearTimeout(tvTimer)
@@ -273,9 +302,11 @@ function sendScreenView(target){
 /* 画面に乗っている道具箱などを避けて、書ける面を取る。
    どの辺に寄っているかは、いちばん近い縁で決める */
 function tabletInsets(){
-  const r = {t: 10, r: 10, b: 10, l: 10}
+  /* ペンタブのときは部品を全部しまうので、ふつうは画面いっぱいになる。
+     それでも何か出ているときのために、どの辺に寄っているかで押し込む */
+  const r = {t: 4, r: 4, b: 4, l: 4}
   const W = window.innerWidth, H = window.innerHeight
-  for (const sel of ['#top', '#tools', '#opts', '#bottom', '#history', '#tabletBar']){
+  for (const sel of ['#top', '#tools', '#opts', '#bottom', '#history']){
     const n = $(sel)
     if (!n || !n.offsetParent) continue
     const b = n.getBoundingClientRect()
@@ -292,20 +323,23 @@ function refitTablet(){
   if (board.tablet()) board.setTabletPad(tabletInsets())
 }
 
+let myTools = null              /* ペンタブに入る前の、この端末の筆 */
+const padSeen = new Set()       /* ペンタブになったことを知らせた相手 */
+
 function startTablet(p){
   me.tablet = true
+  myTools = board.toolState()
   net?.hello()
   board.setTablet(p.id, p.name)
   document.body.classList.add('tabletmode')
-  /* 狭い画面では道具箱を畳む。書ける面を食うので */
-  document.body.classList.toggle('optshide', window.innerWidth < 760)
+  goFull()
   keepAwake()
   syncUI()
   requestAnimationFrame(refitTablet)
-  toast(p.name + ' の画面に書きます。画面を見ながらどうぞ', 3200)
+  padWake(p.name + ' の画面に書いています　・　指二本でちょんと触ると戻す')
   /* 縦のままだと書ける面が細い帯になる。横にすれば画面いっぱい使える */
   if (window.innerHeight > window.innerWidth){
-    setTimeout(() => { if (board.tablet()) toast('横向きに持つと、書ける面が広くなります', 3600) }, 3600)
+    setTimeout(() => { if (board.tablet()) padWake('横向きに持つと、書ける面が広くなります') }, 4200)
   }
 }
 
@@ -313,11 +347,40 @@ function exitTablet(){
   if (!board.tablet()) return
   me.tablet = false
   board.exitTablet()
-  document.body.classList.remove('tabletmode', 'optshide')
+  document.body.classList.remove('tabletmode', 'padwake')
+  clearTimeout(padTimer)
+  dropFull()
   dropAwake()
   net?.hello()
+  /* 借りていた筆を返して、自分の持ち物に戻す */
+  if (myTools){ board.applyTools(myTools); if (myTools.theme) { board.st.theme = myTools.theme; applyTheme() } }
+  myTools = null
   board.home()
   syncUI()
+}
+
+/* 書く面だけにしたいので、出られる全画面にする。
+   iOS の Safari は要素の全画面を断るので、そのときは普通の画面のまま進む */
+function goFull(){
+  const el2 = document.documentElement
+  try { (el2.requestFullscreen || el2.webkitRequestFullscreen)?.call(el2, {navigationUI: 'hide'}) } catch {}
+}
+function dropFull(){
+  try { if (document.fullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document) } catch {}
+}
+
+/* 操作するものを出さない代わりに、触れたときだけ出口と覚え書きを見せる */
+let padTimer = 0
+function padWake(msg){
+  const h = $('#padHint')
+  if (msg) h.textContent = msg
+  document.body.classList.add('padwake')
+  board.showFrameLabel(true)
+  clearTimeout(padTimer)
+  padTimer = setTimeout(() => {
+    document.body.classList.remove('padwake')
+    board.showFrameLabel(false)
+  }, msg ? 4000 : 2600)
 }
 
 function toggleTablet(){
@@ -379,7 +442,7 @@ function syncUI(){
   markTool($('#tools'), board.st.tool)
   const s = board.st
   const sig = [s.tool, s.col, s.sz, s.markCol, s.markSz, s.smooth, s.textSize, s.mathSize,
-    s.eraseR, s.erasePart, s.arrow, s.fill, s.dash, s.snap, s.theme, s.tabletDim,
+    s.eraseR, s.erasePart, s.arrow, s.fill, s.dash, s.snap, s.theme,
     !!board.tablet(), board.selection.length].join('|')
   if (sig !== uiSig){
     uiSig = sig
@@ -388,6 +451,8 @@ function syncUI(){
   $('#undo').disabled = !scene.canUndo
   $('#redo').disabled = !scene.canRedo
   if (board.tablet()) requestAnimationFrame(refitTablet)
+  /* 筆を持ち替えたら、ペンタブにも同じものを持たせる */
+  else sendScreenView()
 }
 
 function buildOptsNow(){
@@ -397,7 +462,6 @@ function buildOptsNow(){
       if (patch.col) store.setPref({col2: patch.col})
       if (patch.markCol) store.setPref({markCol: patch.markCol})
       if (patch.smooth != null) store.setPref({smooth: patch.smooth})
-      if (patch.tabletDim != null) store.setPref({tabletDim: patch.tabletDim})
       syncUI()
       board.applyCursor()
       board.mark()
@@ -565,10 +629,13 @@ function wireChrome(){
 
   $('#shareBtn').onclick = openShare
   $('#tabletBtn').onclick = toggleTablet
-  $('#tabletExit').onclick = exitTablet
-  $('#optsToggle').onclick = () => {
-    document.body.classList.toggle('optshide')
-    requestAnimationFrame(refitTablet)
+  $('#padExit').onclick = exitTablet
+
+  /* 全画面から抜けたら（戻るしぐさ・Esc）ペンタブも畳む */
+  for (const ev of ['fullscreenchange', 'webkitfullscreenchange']){
+    document.addEventListener(ev, () => {
+      if (board.tablet() && !document.fullscreenElement && !document.webkitFullscreenElement) exitTablet()
+    })
   }
 
   $('#saveBtn').onclick = () => {
@@ -615,7 +682,7 @@ function openShare(){
     el('p', {class: 'note', text: 'サーバーは通りません。板の中身は端末どうしで直接やりとりします。中身が残るのは、それぞれの端末の中だけ。'}),
     el('div', {class: 'sep-h'}),
     el('p', {class: 'share-lead', text: '自分のスマホをペンタブにもできます。'}),
-    el('p', {class: 'note', text: 'スマホで同じ合図の板を開き、上の「ペンタブ」ボタンを押すだけ。スマホの面がこの画面にそのまま重なるので、手元は見ずにここを見ながら書けます。'}),
+    el('p', {class: 'note', text: 'スマホで同じ合図の板を開き、上の「ペンタブ」ボタンを押すだけ。スマホは全画面の書く面だけになり、この画面がそのまま重なります。色も太さもこちらで決めたものが乗るので、手元は見ずにここを見ながら書けます。'}),
   ]
   openSheet({title: 'いっしょに書く', body})
 }
@@ -648,7 +715,7 @@ function openHelp(){
     body: [
       el('p', {class: 'note', text: '数式は TeX の書き方です（\\frac{1}{2} で分数、x^2 で2乗）。ボタンからも入れられます。グラフは y= の右側を書くだけで引けます。'}),
       el('p', {class: 'note', text: 'マウスで書くときは、ペンを選んで出てくる「手ぶれ補正」を中か強に。ペン先が少し遅れて付いてくるぶん、線のがたつきが取れます。'}),
-      el('p', {class: 'note', text: 'スマホで同じ合図の板を開いて「ペンタブ」ボタンを押すと、スマホがペンタブになります。スマホの面がパソコンの画面に重なるので、手元を見ずにパソコンを見ながら書けます。横向きに持つと広く使えます。'}),
+      el('p', {class: 'note', text: 'スマホで同じ合図の板を開いて「ペンタブ」ボタンを押すと、スマホが全画面の書く面だけになります。色も太さも補正もこちら（パソコン）で決めたものがそのまま乗ります。スマホ側は、指二本でちょん＝戻す、つまむ＝画面を動かす、右上の ✕ でやめる。横向きに持つと広く使えます。'}),
       table,
     ],
   })

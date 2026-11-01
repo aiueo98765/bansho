@@ -80,13 +80,11 @@
   </button>
 </header>
 
-<!-- ───────────── ペンタブの帯 ───────────── -->
-<div id="tabletBar">
-  <span class="pad-dot" aria-hidden="true"></span>
-  <span class="pad-txt">ペンタブ</span>
-  <button id="optsToggle" type="button">道具</button>
-  <button id="tabletExit" type="button">やめる</button>
-</div>
+<!-- ───────────── ペンタブ（書く面だけにする） ───────────── -->
+<button id="padExit" type="button" aria-label="ペンタブをやめる">
+  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+</button>
+<div id="padHint"></div>
 
 <!-- ───────────── 道具 ───────────── -->
 <nav id="tools" aria-label="道具"></nav>

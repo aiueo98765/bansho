@@ -10,7 +10,9 @@ js を書き換えても古いままのコードが動き続ける。
 """
 import http.server, os, sys
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8200
+"""ポートは環境変数 PORT → 引数 → 既定の順。
+   起動する側が勝手に別のポートを割り当てることがあるので、まず環境変数を見る。"""
+PORT = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 8420))
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 
 
